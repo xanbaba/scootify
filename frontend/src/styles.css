@@ -55,6 +55,8 @@ p { margin: 0.4rem 0 0; color: #456153; }
 
 .campus-map { height: clamp(23rem, 58vh, 39rem); background: #e5ebe3; }
 .map-panel:has([aria-pressed="true"]) .campus-map { cursor: crosshair; }
+.map-panel:has([aria-pressed="true"]) .leaflet-overlay-pane .leaflet-interactive { pointer-events: none; }
+.campus-map:has(.trip-parking) .parking-rack:not(.trip-parking) { opacity: 0.45; }
 
 .planner {
   display: flex;
@@ -74,6 +76,7 @@ p { margin: 0.4rem 0 0; color: #456153; }
 }
 
 .destination-field { flex: 1 1 16rem; }
+.destination-controls select { flex: 1 1 10rem; min-width: 0; }
 
 .destination-field select {
   min-height: 2.5rem;
@@ -127,6 +130,7 @@ p { margin: 0.4rem 0 0; color: #456153; }
 }
 
 .map-controls button:hover { background: #e4f0e8; }
+.map-controls button:disabled { cursor: default; opacity: 0.55; }
 .map-controls button[aria-pressed="true"] { background: #dceadf; border-color: #78a48f; }
 
 .map-legend {
