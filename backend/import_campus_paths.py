@@ -25,9 +25,11 @@ def node_refs(way: ET.Element) -> list[str]:
     return [node.attrib["ref"] for node in way.findall("nd")]
 
 
-def modes_for(attributes: dict[str, str]) -> list[str]:
+def modes_for(attributes: dict[str, str], *, allow_area: bool = False) -> list[str]:
     highway = attributes.get("highway")
-    if highway not in PATH_TYPES or attributes.get("area") == "yes" or attributes.get("indoor") == "yes":
+    if highway not in PATH_TYPES or attributes.get("indoor") == "yes":
+        return []
+    if attributes.get("area") == "yes" and not allow_area:
         return []
     general_access = attributes.get("access") not in RESTRICTED
     mode_tags = {"walk": attributes.get("foot"), "bike": attributes.get("bicycle")}
@@ -40,6 +42,42 @@ def modes_for(attributes: dict[str, str]) -> list[str]:
     if "walk" in modes and attributes.get("foot") == "use_sidepath":
         modes.remove("walk")
     return modes
+
+
+def add_pedestrian_area_links(
+    ways: list[tuple[ET.Element, dict[str, str], list[str]]],
+    points: dict[str, tuple[float, float]],
+    segments: list[PathSegment],
+) -> None:
+    walking_nodes = set()
+    existing_links = set()
+    for segment in segments:
+        if "walk" in segment.modes:
+            walking_nodes.update((segment.from_node, segment.to_node))
+            existing_links.add(frozenset((segment.from_node, segment.to_node)))
+
+    for way, attrs, refs in ways:
+        if attrs.get("area") != "yes" or attrs.get("highway") != "pedestrian":
+            continue
+        if len(refs) < 4 or refs[0] != refs[-1] or "walk" not in modes_for(attrs, allow_area=True):
+            continue
+        for start, end in zip(refs, refs[1:]):
+            if start == end or start not in walking_nodes or end not in walking_nodes:
+                continue
+            link = frozenset((start, end))
+            if link in existing_links:
+                continue
+            geometry = [points[start], points[end]]
+            length = round(distance_m(*geometry), 3)
+            if length == 0:
+                continue
+            low, high = sorted((start, end))
+            segments.append(PathSegment(
+                id=f"osm-area-{way.attrib['id']}-{low}-{high}",
+                name=attrs.get("name", "Pedestrian area"),
+                from_node=start, to_node=end, geometry=geometry, length_m=length, modes=["walk"],
+            ))
+            existing_links.add(link)
 
 
 def main_component(segments: list[PathSegment], mode: str) -> set[str]:
@@ -126,6 +164,7 @@ def build_network(source: Path) -> None:
                 modes=modes, one_way=bike_direction in {"yes", "1", "true", "-1"}, walk_direction=direction,
             ))
 
+    add_pedestrian_area_links(ways, points, segments)
     components = {mode: main_component(segments, mode) for mode in ("bike", "walk")}
     connected = []
     for segment in segments:

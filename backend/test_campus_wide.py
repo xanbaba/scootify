@@ -30,6 +30,14 @@ class CampusWideRoutingTests(TestCase):
                 trip = plan_route(self.graph, RouteRequest(destination_id=destination.id))
                 self.assertEqual(trip.walk.geometry[-1], destination.point)
 
+    def test_engineering_plaza_connects_the_two_paths_on_foot(self) -> None:
+        plaza_link = next(
+            segment for segment in self.graph.segments
+            if segment.id == "osm-area-43247700-542782105-542782111"
+        )
+        self.assertEqual(plaza_link.modes, ["walk"])
+        self.assertLess(plaza_link.length_m, 4)
+
     def test_off_campus_destination_is_rejected(self) -> None:
         with self.assertRaisesRegex(RouteUnavailable, "destination is outside"):
             plan_route(self.graph, RouteRequest(destination=MapPoint(latitude=28.075, longitude=-82.41)))
