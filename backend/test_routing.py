@@ -28,9 +28,10 @@ class TripRoutingTests(TestCase):
         self.assertNotIn(closure, trip.ride.segment_ids)
         self.assertEqual(trip.ride.geometry[-1], trip.walk.geometry[0])
 
-    def test_start_far_from_the_graph_is_rejected(self) -> None:
+    def test_start_outside_coverage_is_rejected(self) -> None:
+        self.graph.bounds = ((28.0547, -82.4260), (28.0692, -82.4019))
         self.library.start = MapPoint(latitude=28.07, longitude=-82.42)
-        with self.assertRaisesRegex(RouteUnavailable, "within 35 m"):
+        with self.assertRaisesRegex(RouteUnavailable, "outside the USF Tampa routing area"):
             plan_route(self.graph, self.library)
 
     def test_best_rack_uses_total_time_and_requires_both_legs(self) -> None:

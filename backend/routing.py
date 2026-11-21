@@ -5,16 +5,17 @@ from math import cos, hypot, radians
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from .campus import CampusGraph, Coordinate, PathSegment
+from .campus import CampusGraph, Coordinate, PathSegment, within_bounds
 
 
 BIKE_SPEED_MPS = 4.0
 WALK_SPEED_MPS = 1.4
-MAX_SNAP_DISTANCE_M = 35
 METERS_PER_DEGREE = 111_195
 MAP_START_NODE = "map-start"
+MAP_DESTINATION_NODE = "map-destination"
+Mode = Literal["bike", "walk"]
 
 
 class MapPoint(BaseModel):
@@ -23,8 +24,15 @@ class MapPoint(BaseModel):
 
 
 class RouteRequest(BaseModel):
-    destination_id: str
+    destination_id: str | None = None
+    destination: MapPoint | None = None
     start: MapPoint | None = None
+
+    @model_validator(mode="after")
+    def require_one_destination(self) -> "RouteRequest":
+        if (self.destination_id is None) == (self.destination is None):
+            raise ValueError("Provide one named destination or one destination coordinate")
+        return self
 
 
 class RouteLeg(BaseModel):
@@ -39,6 +47,7 @@ class TripRoute(BaseModel):
     ride: RouteLeg
     walk: RouteLeg
     snap_distance_m: float
+    destination_snap_distance_m: float
 
 
 class RouteUnavailable(Exception):
@@ -62,18 +71,25 @@ class ShortestPaths:
     previous: dict[str, tuple[str, Traversal]]
 
 
+def travel_direction(segment: PathSegment, mode: Mode) -> Literal["forward", "backward", "both"]:
+    if mode == "walk" and segment.walk_direction is not None:
+        return segment.walk_direction
+    return "forward" if segment.one_way else "both"
+
+
 def build_adjacency(
-    segments: list[PathSegment], mode: Literal["bike", "walk"], *, reverse: bool = False
+    segments: list[PathSegment], mode: Mode, *, reverse: bool = False
 ) -> Adjacency:
     adjacency: Adjacency = defaultdict(list)
     for segment in segments:
         if mode not in segment.modes:
             continue
         start, end, geometry = segment.from_node, segment.to_node, segment.geometry
-        if reverse:
+        direction = travel_direction(segment, mode)
+        if reverse != (direction == "backward"):
             start, end, geometry = end, start, geometry[::-1]
         adjacency[start].append(Traversal(end, segment.id, geometry, segment.length_m))
-        if not segment.one_way:
+        if direction == "both":
             adjacency[end].append(Traversal(start, segment.id, geometry[::-1], segment.length_m))
     return adjacency
 
@@ -120,9 +136,14 @@ def make_leg(
     )
 
 
-def prepare_map_start(
-    point: MapPoint, segments: list[PathSegment], bike_graph: Adjacency
+def prepare_map_point(
+    point: MapPoint, graph: CampusGraph, adjacency: Adjacency, mode: Mode, *,
+    virtual_node: str, reverse: bool = False,
 ) -> tuple[str, Coordinate, float]:
+    endpoint = "start" if mode == "bike" else "destination"
+    if graph.bounds and not within_bounds((point.latitude, point.longitude), graph.bounds):
+        raise RouteUnavailable(f"The {endpoint} is outside the USF Tampa routing area. Pick a point on campus.")
+
     # Project coordinates onto a local plane at the clicked latitude.
     longitude_scale = METERS_PER_DEGREE * cos(radians(point.latitude))
 
@@ -132,8 +153,8 @@ def prepare_map_start(
 
     nearest = None
     nearest_distance = float("inf")
-    for segment in segments:
-        if "bike" not in segment.modes:
+    for segment in graph.segments:
+        if mode not in segment.modes or segment.id.startswith("access-"):
             continue
         for index, (a, b) in enumerate(zip(segment.geometry, segment.geometry[1:]), start=1):
             ay, ax = offset(a)
@@ -148,9 +169,8 @@ def prepare_map_start(
                 nearest = segment, index, fraction
                 nearest_distance = distance
 
-    if nearest is None or nearest_distance > MAX_SNAP_DISTANCE_M:
-        raise RouteUnavailable(f"Choose a start within {MAX_SNAP_DISTANCE_M} m of a mapped cycling path.")
-
+    if nearest is None:
+        raise RouteUnavailable(f"No mapped path is available for this {endpoint}.")
     segment, index, fraction = nearest
     geometry = segment.geometry
     a, b = geometry[index - 1], geometry[index]
@@ -181,30 +201,43 @@ def prepare_map_start(
     start_distance = shape_length(leading)
     end_distance = shape_length(trailing)
     scale = segment.length_m / (start_distance + end_distance)
-    bike_graph[MAP_START_NODE] = [Traversal(segment.to_node, segment.id, trailing, end_distance * scale)]
-    if not segment.one_way:
-        bike_graph[MAP_START_NODE].append(
+    direction = travel_direction(segment, mode)
+    trailing_allowed = direction != ("forward" if reverse else "backward")
+    leading_allowed = direction != ("backward" if reverse else "forward")
+    if trailing_allowed:
+        adjacency[virtual_node].append(Traversal(segment.to_node, segment.id, trailing, end_distance * scale))
+    if leading_allowed:
+        adjacency[virtual_node].append(
             Traversal(segment.from_node, segment.id, leading[::-1], start_distance * scale)
         )
-    return MAP_START_NODE, snapped, nearest_distance
+    return virtual_node, snapped, nearest_distance
 
 
 def plan_route(graph: CampusGraph, request: RouteRequest) -> TripRoute:
-    destination = next((item for item in graph.destinations if item.id == request.destination_id), None)
-    if destination is None:
-        raise RouteUnavailable("Choose a mapped campus destination.")
-
     locations = {node.id: (node.latitude, node.longitude) for node in graph.nodes}
     bike_graph = build_adjacency(graph.segments, "bike")
     if request.start is None:
-        origin = graph.demo.origin_node
+        origin = graph.default_start_node
         start, snap_distance = locations[origin], 0.0
     else:
-        origin, start, snap_distance = prepare_map_start(request.start, graph.segments, bike_graph)
+        origin, start, snap_distance = prepare_map_point(
+            request.start, graph, bike_graph, "bike", virtual_node=MAP_START_NODE,
+        )
+
+    walk_graph = build_adjacency(graph.segments, "walk", reverse=True)
+    if request.destination is not None:
+        entrance_node, entrance, destination_snap = prepare_map_point(
+            request.destination, graph, walk_graph, "walk", virtual_node=MAP_DESTINATION_NODE, reverse=True,
+        )
+    else:
+        destination = next((item for item in graph.destinations if item.id == request.destination_id), None)
+        if destination is None:
+            raise RouteUnavailable("Choose a mapped campus destination.")
+        entrance_node = destination.entrance_node
+        entrance, destination_snap = locations[entrance_node], 0.0
 
     ride_paths = shortest_paths(bike_graph, origin, BIKE_SPEED_MPS)
-    walk_graph = build_adjacency(graph.segments, "walk", reverse=True)
-    walk_paths = shortest_paths(walk_graph, destination.entrance_node, WALK_SPEED_MPS)
+    walk_paths = shortest_paths(walk_graph, entrance_node, WALK_SPEED_MPS)
     candidates = []
     for rack in graph.rack_connections:
         ride_time = ride_paths.durations.get(rack.node_id)
@@ -219,6 +252,7 @@ def plan_route(graph: CampusGraph, request: RouteRequest) -> TripRoute:
     return TripRoute(
         rack_id=rack_id,
         ride=make_leg(ride_paths, rack_node, start),
-        walk=make_leg(walk_paths, rack_node, locations[destination.entrance_node], reverse=True),
+        walk=make_leg(walk_paths, rack_node, entrance, reverse=True),
         snap_distance_m=round(snap_distance, 1),
+        destination_snap_distance_m=round(destination_snap, 1),
     )
