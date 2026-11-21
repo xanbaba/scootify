@@ -74,11 +74,11 @@ function StudentView() {
         <dl className="trip-details">
           <div>
             <dt>Start</dt>
-            <dd>Cooper Hall</dd>
+            <dd>USF Bookstore bike rack</dd>
           </div>
           <div>
             <dt>Travel</dt>
-            <dd>Bike to a rack, then walk to the entrance</dd>
+            <dd>Bike to the library’s front rack, then walk to the main entrance</dd>
           </div>
         </dl>
       </section>

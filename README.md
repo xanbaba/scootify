@@ -18,26 +18,28 @@ Frontend:
 
 ```powershell
 cd frontend
-npm.cmd install
-npm.cmd run dev
+npm.cmd ci
+npm.cmd run dev -- --host 127.0.0.1
 ```
 
-- [Student view](http://localhost:5173/)
-- [Admin view](http://localhost:5173/admin)
+- [Student view](http://127.0.0.1:5173/)
+- [Admin view](http://127.0.0.1:5173/admin)
 - [API health](http://127.0.0.1:8000/api/health) returns `{"status":"ok"}`. Both React views also check this endpoint through the Vite proxy.
+
+Open both views and check for **API connected**. If the API starts after the frontend, use **Retry** to run the health check again.
 
 Run `npm.cmd run build` from `frontend` to type-check and build the frontend.
 
 ## HackJam demo
 
-- **Primary track** — Home Turf. The project addresses USF Tampa campus travel and gives students a way to report path problems to the team that can act on them. Best Overall is an additional submission option for the same project.
-- **Trip** — Start at Cooper Hall, ride to a verified bike rack near Tampa Library, and walk to the library entrance.
-- **Closure scenario** — Close a segment on the shorter approach to the rack. Show the report warning in Fast mode, show the Safer detour, then show both modes avoiding an official closure. Reopen the segment at the end.
-- **Map data gate** — Confirm the exact rack, entrance, closure segment, and connected alternate approach when building the path graph. The closure is a demo scenario.
+- **Primary track** — Home Turf. Scootify addresses a local USF Tampa problem by connecting students who report path hazards with the campus staff who can fix them. [HackJam ’26 tracks](https://www.mlh.com/events/hackjam-26)
+- **Trip** — Start at the USF Bookstore bike rack. Ride via Acorn Court past the John and Grace Allen Building to the bike rack in front of Tampa Library. Walk from the rack to the library’s main entrance. [USF campus ride, checkpoints 3–4](https://www.cutr.usf.edu/2026/07/roll-safe-bulls/) · [Tampa Library entrance](https://lib.usf.edu/news/new-entrance-for-tampa-library-sets-november-opening/)
+- **Closure scenario** — Report a simulated pothole on the Acorn Court path beside the Collins Boulevard Parking Facility. Use the route via the Leroy Collins Boulevard bike lane and USF Apple Drive as the candidate detour. Show Fast carrying a warning, Safer choosing the detour, and both modes detouring when staff close the affected segment. Reopen the segment to restore access. [USF campus ride and bike lanes](https://www.cutr.usf.edu/2026/07/roll-safe-bulls/) · [USF parking map](https://www.usf.edu/parking/documents/parkingmap.pdf)
+- **Path graph verification** — Confirm the rack and entrance coordinates, which links connect the detour to the rack, and where riding is allowed when building the graph. The milestone 1 views show the demo setup and API connection.
 
 ## Frameworks, data, and AI credits
 
 - Frontend uses [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), and [Vite](https://vite.dev/).
 - Backend uses [FastAPI](https://fastapi.tiangolo.com/), [Pydantic](https://docs.pydantic.dev/), and [Uvicorn](https://www.uvicorn.org/).
 - Demo planning references include the [USF facilities maps](https://www.usf.edu/facilities/facilities-information-services/maps.aspx), [Tampa Library directions](https://lib.usf.edu/about/maps-directions/), and [USF Parking and Transportation GIS service](https://maps.usf.edu/server/rest/services/Parking_and_Transportation/MapServer). Data import is part of the next milestone.
-- OpenAI Codex helped break down milestones, draft setup documentation, and generate the initial React and FastAPI scaffold. The project entrant supplied the concept, campus use case, stack choice, and event rules. Update this record as the project develops and include AI use in the HackJam submission.
+- OpenAI Codex helped break down milestones, generate the initial React and FastAPI scaffold, define the demo trip using USF sources, and verify the app locally. The project entrant supplied the concept, campus use case, stack choice, and event rules. Update this record as the project develops and include AI use in the HackJam submission.
