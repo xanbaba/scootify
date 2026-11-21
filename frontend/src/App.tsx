@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { CampusMap } from "./CampusMap";
 
 type ConnectionStatus = "checking" | "connected" | "unavailable";
 
@@ -68,9 +69,9 @@ function StudentView() {
   return (
     <>
       <h1>Plan a campus trip</h1>
-      <section className="panel" aria-labelledby="demo-title">
-        <h2 id="demo-title">USF Tampa Library</h2>
-        <p>Planned demo trip</p>
+      <CampusMap />
+      <section className="panel trip-summary" aria-labelledby="demo-title">
+        <h2 id="demo-title">USF Tampa Library demo</h2>
         <dl className="trip-details">
           <div>
             <dt>Start</dt>
