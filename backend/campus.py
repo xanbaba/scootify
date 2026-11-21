@@ -5,6 +5,9 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+Coordinate = tuple[float, float]
+
+
 class CampusNode(BaseModel):
     id: str
     latitude: float
@@ -16,7 +19,7 @@ class PathSegment(BaseModel):
     name: str
     from_node: str
     to_node: str
-    geometry: list[tuple[float, float]] = Field(min_length=2)
+    geometry: list[Coordinate] = Field(min_length=2)
     length_m: float = Field(gt=0)
     modes: list[Literal["walk", "bike"]] = Field(min_length=1)
     one_way: bool = False
@@ -25,6 +28,13 @@ class PathSegment(BaseModel):
 class RackConnection(BaseModel):
     rack_id: UUID
     node_id: str
+    name: str
+
+
+class Destination(BaseModel):
+    id: str
+    name: str
+    entrance_node: str
 
 
 class DemoTrip(BaseModel):
@@ -41,6 +51,7 @@ class CampusGraph(BaseModel):
     nodes: list[CampusNode]
     segments: list[PathSegment]
     rack_connections: list[RackConnection]
+    destinations: list[Destination]
     demo: DemoTrip
 
 

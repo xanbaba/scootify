@@ -5,6 +5,7 @@ from pydantic import BaseModel, ValidationError
 
 from .campus import CampusGraph, load_graph
 from .parking import ParkingRack, load_racks
+from .routing import RouteRequest, RouteUnavailable, TripRoute, plan_route
 
 
 class HealthResponse(BaseModel):
@@ -23,6 +24,14 @@ def health() -> HealthResponse:
 @app.get("/api/campus/graph")
 def get_campus_graph() -> CampusGraph:
     return campus_graph
+
+
+@app.post("/api/route")
+def get_route(request: RouteRequest) -> TripRoute:
+    try:
+        return plan_route(campus_graph, request)
+    except RouteUnavailable as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @app.get("/api/campus/racks")
