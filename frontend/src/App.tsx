@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { CampusMap } from "./CampusMap";
+import { AdminReports } from "./AdminReports";
 
 type ConnectionStatus = "checking" | "connected" | "unavailable";
 
@@ -65,18 +66,6 @@ function ApiStatus() {
   );
 }
 
-function AdminView() {
-  return (
-    <>
-      <h1>Campus maintenance</h1>
-      <section className="panel" aria-labelledby="reports-title">
-        <h2 id="reports-title">Reports and closures</h2>
-        <p>Report and closure controls are pending.</p>
-      </section>
-    </>
-  );
-}
-
 export function App() {
   const path = window.location.pathname.replace(/\/$/, "") || "/";
   const isStudent = path === "/";
@@ -94,7 +83,7 @@ export function App() {
         </nav>
       </header>
       <main>
-        {isAdmin && <AdminView />}
+        {isAdmin && <AdminReports />}
         {!isAdmin && (
           <>
             <h1>Page unavailable</h1>

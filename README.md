@@ -36,6 +36,7 @@ Run `npm.cmd run build` from `frontend` to type-check and build the frontend. Ru
 - **Primary track** — Home Turf. Scootify addresses a local USF Tampa problem by connecting students who report path hazards with the campus staff who can fix them. [HackJam ’26 tracks](https://www.mlh.com/events/hackjam-26)
 - **Trip** — Under **Set start** or **Change**, choose **Use Bookstore**, then choose **Library** for a repeatable demo. The map uses a solid line for the ride to parking and dashed lines for walking. [USF campus ride, checkpoints 3–4](https://www.cutr.usf.edu/2026/07/roll-safe-bulls/) · [Tampa Library entrance](https://lib.usf.edu/news/new-entrance-for-tampa-library-sets-november-opening/)
 - **Closure scenario** — Simulate a pothole on the Collins Boulevard approach path (`osm-43877414-3566360615-557390886`). The campus graph gives the Bookstore trip a different approach to the east rack when that segment is removed.
+- **Hazard scenario** — From the student map, use **Report** to mark a pothole on that Collins Boulevard segment. Verify the highlighted segment before posting. Plan **Use Bookstore → Library** in **Fast** to see a warning and in **Safer** to see the detour. Use the staff dashboard to review rider observations and mark the hazard resolved.
 - **Live guidance** — Preview the full trip from overhead. Tap **Go** for a tilted view with your heading at the top. If the trip starts on foot, tap **Start riding** when you reach the riding path. Tap **I parked** to switch to the final walk. **End trip** stops tracking and restores the overhead preview.
 
 ## Campus data
@@ -56,6 +57,14 @@ The navigation camera uses the phone compass when permitted, then the device’s
 `POST /api/route` accepts either a `destination_id` or a `destination` coordinate, plus an optional `start` coordinate. Coordinates have `latitude` and `longitude` fields. Omit `start` for the explicit Bookstore preset. The response contains the selected rack ID, the `approach` (optional first walk), `ride`, and `walk` legs, and the distances from the pins to the network. Each leg includes its coordinates, segment IDs, distance, and estimated time.
 
 The planner checks which riding paths the student can reach on foot, then uses those walking times to calculate the fastest ride to each rack. It includes the final walk from the rack to the destination. The app shows the initial walk only when it appears in the selected trip. Estimates assume 4 m/s on the bike and 1.4 m/s on foot.
+
+## Campus hazard reports
+
+Tap **Report** on the student map. The form suggests a GPS pin and lets the rider move it by tapping the map. It highlights the selected path before posting. The description supports phone keyboard dictation and suggests a category from common phrases. The rider can select a category directly.
+
+Fast mode minimizes travel time. Safer adds a 60-second routing cost to each traversal of a segment with an active report. The ETA uses physical travel time in both modes. During GPS navigation, an on-route hazard ahead appears in a dismissible banner. After passing it, the rider can choose **Still there** or **Looks clear**.
+
+SQLite stores reports and rider observations at `backend/data/scootify.sqlite3`. Set `SCOOTIFY_DB_PATH` before running the API to use a separate database. The demo counts one current observation per report and browser. The staff dashboard shows both counts and retains resolved reports. The local prototype uses a shared demo admin view without staff sign-in.
 
 ## Frameworks, data, and AI credits
 

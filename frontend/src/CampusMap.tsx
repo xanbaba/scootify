@@ -1,13 +1,16 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import {
   ArrowLeft, ArrowRight, ArrowUpRight, Bike, ChevronDown, CircleParking, Compass,
-  Crosshair, Footprints, LocateFixed, MapPin, Minus, Navigation, Plus, Route, X,
+  Crosshair, Footprints, LocateFixed, MapPin, Minus, Navigation, Plus, Route, TriangleAlert, X,
 } from "lucide-react";
 import { latLngBounds, type Map as LeafletMap, type PathOptions } from "leaflet";
 import { Circle, CircleMarker, MapContainer, Polyline, Popup, Rectangle, TileLayer, Tooltip, useMapEvents } from "react-leaflet";
 import type { Map as PerspectiveMap } from "maplibre-gl";
 import { DestinationSearch, placeName, type CampusPlace } from "./DestinationSearch";
+import { HazardNotice } from "./HazardNotice";
+import { HazardReportForm } from "./HazardReportForm";
 import type { PerspectiveProps } from "./NavigationPerspective";
+import { categories, reportPoint, useReports, type ReportPath } from "./reports";
 import { useLiveLocation } from "./useLiveLocation";
 import { requestCompassAccess, routeHeading, type Coordinate } from "./navigationHeading";
 import "@fontsource-variable/manrope";
@@ -36,7 +39,8 @@ type StartSelection = { point: Coordinate; source: "gps" | "pin" | "bookstore" }
 type DestinationSelection = { id: string } | { point: Coordinate };
 type MapSelection = "start" | "destination";
 type ActiveLeg = "approach" | "ride" | "walk";
-type RouteLeg = { geometry: Coordinate[]; duration_seconds: number };
+type RouteMode = "fast" | "safer";
+type RouteLeg = { geometry: Coordinate[]; segment_ids: string[]; duration_seconds: number };
 type TripRoute = {
   rack_id: string;
   approach?: RouteLeg | null;
@@ -51,6 +55,7 @@ const rideStyle = { color: "#08755c", weight: 7 };
 const walkStyle = { color: "#b45921", weight: 6, dashArray: "3 8" };
 const routeOutline = { color: "#ffffff", weight: 11, opacity: 0.94 };
 const rackStyle = { color: "#fff", weight: 1.4, fillColor: "#276954", fillOpacity: 0.9 };
+const hazardStyle = { color: "#fff", weight: 2, fillColor: "#b84b18", fillOpacity: 1 };
 
 function requestPoint(point: Coordinate): Location {
   return { latitude: point[0], longitude: point[1] };
@@ -117,6 +122,8 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   const perspective = useRef<PerspectiveMap | null>(null);
   const sheet = useRef<HTMLElement | null>(null);
   const locationRequest = useRef(0);
+  const reportLocationRequest = useRef(0);
+  const previewReportKey = useRef("");
   const navigationSequence = useRef(0);
   const alignedSession = useRef<number | null>(null);
   const [sheetHeight, setSheetHeight] = useState(0);
@@ -129,12 +136,19 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   const [locating, setLocating] = useState(true);
   const [locationMessage, setLocationMessage] = useState("");
   const [result, setResult] = useState<RouteResult | null>(null);
+  const [routeMode, setRouteMode] = useState<RouteMode>("fast");
   const [attempt, setAttempt] = useState(0);
   const [navigation, setNavigation] = useState<number | null>(null);
   const [perspectiveReady, setPerspectiveReady] = useState(false);
   const [perspectiveUnavailable, setPerspectiveUnavailable] = useState(false);
   const [following, setFollowing] = useState(true);
   const [confirmedLeg, setConfirmedLeg] = useState<"ride" | "walk" | null>(null);
+  const [reporting, setReporting] = useState(false);
+  const [reportPin, setReportPin] = useState<Coordinate | null>(null);
+  const [reportPath, setReportPath] = useState<ReportPath | null>(null);
+  const [reportLocationMessage, setReportLocationMessage] = useState("");
+  const [reportPosted, setReportPosted] = useState(false);
+  const { reports, refresh: refreshReports } = useReports();
   const tracking = useLiveLocation(navigation);
   const liveFix = tracking?.fix;
   const route = result && "route" in result ? result.route : null;
@@ -152,7 +166,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   const campusBounds = latLngBounds(campus.bounds);
   const liveOnCampus = liveFix && campusBounds.contains(liveFix.point);
   const isNavigating = navigation !== null;
-  const usePerspective = isNavigating && perspectiveReady && !perspectiveUnavailable;
+  const usePerspective = isNavigating && !reporting && perspectiveReady && !perspectiveUnavailable;
   const guidancePosition = liveOnCampus ? liveFix.point : start?.point;
   const guidanceHeading = (liveOnCampus ? liveFix.heading : null)
     ?? routeHeading(route?.[activeLeg]?.geometry ?? []);
@@ -208,6 +222,13 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
     return () => { locationRequest.current += 1; };
   }, [locate]);
 
+  const activeReportKey = reports.map(({ id }) => id).join(",");
+  useEffect(() => {
+    if (isNavigating || previewReportKey.current === activeReportKey) return;
+    previewReportKey.current = activeReportKey;
+    if (start && destination) setAttempt((previous) => previous + 1);
+  }, [activeReportKey, destination, isNavigating, start]);
+
   useEffect(() => {
     if (!start || !destination) return;
     const controller = new AbortController();
@@ -224,6 +245,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
           body: JSON.stringify({
             ...("id" in target ? { destination_id: target.id } : { destination: requestPoint(target.point) }),
             start: origin.source === "bookstore" ? null : requestPoint(origin.point),
+            mode: routeMode,
           }),
           signal: controller.signal,
         });
@@ -252,7 +274,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [start, destination, attempt]);
+  }, [start, destination, attempt, routeMode]);
 
   const viewportPadding = useCallback(() => {
     const bounds = sheet.current?.getBoundingClientRect();
@@ -263,9 +285,9 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
     return { paddingTopLeft: [left, 102] as Coordinate, paddingBottomRight: [64, bottom] as Coordinate };
   }, []);
 
-  const fitCampus = useCallback(() => {
+  const fitCampus = useCallback((showPerspective = true) => {
     const padding = viewportPadding();
-    if (perspective.current) {
+    if (perspective.current && showPerspective) {
       const [[south, west], [north, east]] = campus.bounds;
       const [left, top] = padding.paddingTopLeft;
       const [right, bottom] = padding.paddingBottomRight;
@@ -294,14 +316,14 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
 
   const attachMap = useCallback((instance: LeafletMap | null) => {
     map.current = instance;
-    if (instance) fitCampus();
+    if (instance) fitCampus(false);
   }, [fitCampus]);
 
   useEffect(() => {
-    if (isNavigating || !route || !start || !destinationPoint) return;
+    if (isNavigating || reporting || !route || !start || !destinationPoint) return;
     const points = [start.point, destinationPoint, ...(route.approach?.geometry ?? []), ...route.ride.geometry, ...route.walk.geometry];
     map.current?.fitBounds(latLngBounds(points), { ...viewportPadding(), maxZoom: 18, animate: false });
-  }, [route, start, destinationPoint, isNavigating, sheetHeight, viewportPadding]);
+  }, [route, start, destinationPoint, isNavigating, reporting, sheetHeight, viewportPadding]);
 
   useEffect(() => {
     if (navigation === null || !liveFix || !liveOnCampus || !start || !map.current) return;
@@ -323,8 +345,54 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   }, [viewportPadding]);
 
   useEffect(() => {
-    if (isNavigating && !usePerspective && liveFix && liveOnCampus && following) centerOn(liveFix.point);
-  }, [centerOn, following, isNavigating, liveFix, liveOnCampus, usePerspective]);
+    if (isNavigating && !reporting && !usePerspective && liveFix && liveOnCampus && following) centerOn(liveFix.point);
+  }, [centerOn, following, isNavigating, liveFix, liveOnCampus, reporting, usePerspective]);
+
+  useEffect(() => {
+    if (!reportPosted) return;
+    const timeout = window.setTimeout(() => setReportPosted(false), 3500);
+    return () => window.clearTimeout(timeout);
+  }, [reportPosted]);
+
+  function closeReport() {
+    reportLocationRequest.current += 1;
+    setReporting(false);
+    setReportPath(null);
+    setReportPin(null);
+  }
+
+  function beginReport() {
+    const request = ++reportLocationRequest.current;
+    setReporting(true);
+    setReportPosted(false);
+    setPicking(null);
+    map.current?.closePopup();
+    setReportLocationMessage("Finding your location… You can also tap the map.");
+
+    function suggestLocation(point: Coordinate) {
+      if (request !== reportLocationRequest.current) return;
+      if (!campusBounds.contains(point)) {
+        setReportLocationMessage("Tap the map to place the hazard on campus.");
+        return;
+      }
+      setReportPin(point);
+      setReportLocationMessage("Check the highlighted path or tap the map to move the pin.");
+      window.requestAnimationFrame(() => {
+        if (request === reportLocationRequest.current) centerOn(point);
+      });
+    }
+
+    if (liveOnCampus && liveFix && !tracking?.error) suggestLocation(liveFix.point);
+    else if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        ({ coords }) => suggestLocation([coords.latitude, coords.longitude]),
+        () => {
+          if (request === reportLocationRequest.current) setReportLocationMessage("Tap the map to place the hazard.");
+        },
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 },
+      );
+    } else setReportLocationMessage("Tap the map to place the hazard.");
+  }
 
   function chooseStart(point: Coordinate, source: StartSelection["source"]) {
     locationRequest.current += 1;
@@ -355,7 +423,18 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
 
   function onMapPoint(point: Coordinate) {
     if (!campusBounds.contains(point)) {
+      if (reporting) {
+        setReportLocationMessage("Choose a point inside the campus outline.");
+        return;
+      }
       setPinMessage("Choose a point inside the campus outline.");
+      return;
+    }
+    if (reporting) {
+      reportLocationRequest.current += 1;
+      setReportPath(null);
+      setReportPin(point);
+      setReportLocationMessage("Check the highlighted path or tap the map to move the pin.");
       return;
     }
     if (picking === "start") chooseStart(point, "pin");
@@ -404,11 +483,14 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
     const leg = route[key];
     return leg ? [{ key, leg }] : [];
   }) : [];
+  const traversedSegments = new Set(routeLegs.flatMap(({ leg }) => leg.segment_ids));
+  const routeWarnings = reports.filter((report) => traversedSegments.has(report.segment_id));
 
   return (
     <main
       className="navigator"
-      data-picking={picking ?? undefined}
+      data-picking={reporting ? "hazard" : picking ?? undefined}
+      data-reporting={reporting || undefined}
       data-perspective={usePerspective ? "true" : undefined}
       style={{ "--sheet-height": sheetHeight + "px" } as CSSProperties}
     >
@@ -424,8 +506,8 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
           url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
           maxZoom={19}
         />
-        <MapInteraction onPick={picking ? onMapPoint : null} onDrag={pauseFollowing} />
-        {picking && <Rectangle bounds={campusBounds} interactive={false} pathOptions={{ color: "#164f3e", weight: 2, dashArray: "6 6", fillOpacity: 0.035 }} />}
+        <MapInteraction onPick={picking || reporting ? onMapPoint : null} onDrag={reporting ? () => {} : pauseFollowing} />
+        {(picking || reporting) && <Rectangle bounds={campusBounds} interactive={false} pathOptions={{ color: "#164f3e", weight: 2, dashArray: "6 6", fillOpacity: 0.035 }} />}
         {routeLegs.filter(({ leg }) => leg.geometry.length > 1).map(({ key, leg }) => (
           <Polyline key={key + "-outline"} positions={leg.geometry} pathOptions={key === "ride" ? routeOutline : { ...routeOutline, weight: 8 }} interactive={false} />
         ))}
@@ -454,6 +536,18 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
         {destinationPoint && (
           <TripMarker point={destinationPoint} accent="#a54d13" label={destinationPin ? "Destination" : "Entrance"} side={parkingSide === "left" ? "right" : "left"} className="trip-entrance" />
         )}
+        {reports.map((report) => (
+          <CircleMarker key={report.id} center={reportPoint(report)} radius={7} pathOptions={hazardStyle}>
+            <Tooltip>{categories[report.category]}</Tooltip>
+            <Popup><strong>{categories[report.category]}</strong>{report.description && <div>{report.description}</div>}</Popup>
+          </CircleMarker>
+        ))}
+        {reporting && reportPath && (
+          <Polyline positions={reportPath.geometry} interactive={false} pathOptions={{ color: "#cc651d", weight: 10, opacity: 0.86 }} />
+        )}
+        {reporting && reportPin && (
+          <CircleMarker center={reportPath?.point ?? reportPin} radius={8} interactive={false} pathOptions={hazardStyle} />
+        )}
         {isNavigating && liveFix && liveOnCampus && (
           <>
             <Circle center={liveFix.point} radius={liveFix.accuracy} interactive={false} pathOptions={{ color: "#156eca", weight: 1, opacity: 0.25, fillOpacity: 0.14 }} />
@@ -466,35 +560,49 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
           <NavigationPerspective
             session={navigation}
             position={guidancePosition} heading={guidanceHeading} live={Boolean(liveOnCampus)}
-            route={route} destination={destinationPoint} racks={rackPoints} following={following}
+            route={route} destination={destinationPoint} racks={rackPoints} hazards={reports} following={following && !reporting}
             padding={navigationPadding} onMap={attachPerspective} onExplore={pauseFollowing} onUnavailable={fallBackToFlat}
           />
         </Suspense>
       )}
       <NavigatorHeader />
+      {isNavigating && (
+        <HazardNotice key={navigation} leg={route?.[activeLeg] ?? undefined}
+          liveFix={liveOnCampus && !tracking?.error ? liveFix : undefined}
+          reports={routeWarnings} hidden={reporting} onVoted={refreshReports} />
+      )}
+      {reportPosted && <div className="report-toast" role="status">Hazard posted</div>}
 
       <div className="navigator-map-actions" role="group" aria-label="Map controls">
-        <IconButton label="Fit campus" onClick={() => { setFollowing(false); fitCampus(); }}><Compass aria-hidden="true" size={21} /></IconButton>
+        {!reporting && !picking && <button className="map-report-button" type="button" onClick={beginReport}><TriangleAlert aria-hidden="true" size={20} /> Report</button>}
+        <IconButton label="Fit campus" onClick={() => { if (!reporting) setFollowing(false); fitCampus(usePerspective); }}><Compass aria-hidden="true" size={21} /></IconButton>
         <IconButton label={(showRacks ? "Hide" : "Show") + " parking racks"} onClick={() => setShowRacks(!showRacks)} pressed={showRacks}>
           <CircleParking aria-hidden="true" size={21} />
         </IconButton>
         <div className="navigator-zoom">
           <IconButton label="Zoom in" onClick={() => {
-            if (!perspective.current) map.current?.zoomIn();
+            if (!usePerspective || !perspective.current) map.current?.zoomIn();
             else { pauseFollowing(); perspective.current.zoomIn(); }
           }}><Plus aria-hidden="true" size={19} /></IconButton>
           <IconButton label="Zoom out" onClick={() => {
-            if (!perspective.current) map.current?.zoomOut();
+            if (!usePerspective || !perspective.current) map.current?.zoomOut();
             else { pauseFollowing(); perspective.current.zoomOut(); }
           }}><Minus aria-hidden="true" size={19} /></IconButton>
         </div>
-        <IconButton label={isNavigating ? "Follow my location" : "Center on my location"} onClick={recenter} pressed={isNavigating ? following : undefined}>
+        {!reporting && <IconButton label={isNavigating ? "Follow my location" : "Center on my location"} onClick={recenter} pressed={isNavigating ? following : undefined}>
           <LocateFixed aria-hidden="true" size={21} />
-        </IconButton>
+        </IconButton>}
       </div>
 
       <section className="navigator-sheet" ref={sheet} aria-label="Campus trip">
-        {picking ? (
+        {reporting ? (
+          <HazardReportForm point={reportPin} locationMessage={reportLocationMessage}
+            onSelectPath={setReportPath} onClose={closeReport} onPosted={() => {
+              closeReport();
+              refreshReports();
+              setReportPosted(true);
+            }} />
+        ) : picking ? (
           <div className="sheet-picking">
             <span className="sheet-picking-icon"><MapPin aria-hidden="true" size={22} /></span>
             <div><h1>Pin your {picking}</h1><p role="status">{pinMessage || "Tap a point on the campus map."}</p></div>
@@ -530,6 +638,16 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
                   <h1>{destinationLabel}</h1>
                   {route && <span className="estimate" title="Estimated trip time">{formatTime(routeLegs.reduce((time, { leg }) => time + leg.duration_seconds, 0))}</span>}
                 </div>
+                <div className="route-mode" role="group" aria-label="Route preference">
+                  {(["fast", "safer"] as const).map((mode) => (
+                    <button key={mode} className="sheet-secondary" type="button" aria-pressed={routeMode === mode} onClick={() => {
+                      if (mode !== routeMode) {
+                        setResult(null);
+                        setRouteMode(mode);
+                      }
+                    }}>{mode === "fast" ? "Fast" : "Safer"}</button>
+                  ))}
+                </div>
                 {route && (
                   <>
                     <div className="route-breakdown" aria-label="Trip legs">
@@ -541,6 +659,11 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
                         </div>
                       ))}
                     </div>
+                    {routeWarnings.length > 0 && (
+                      <p className="route-hazard-summary" role="status"><TriangleAlert aria-hidden="true" size={16} />
+                        {routeWarnings.length === 1 ? categories[routeWarnings[0].category] + " on this route" : routeWarnings.length + " hazards on this route"}
+                      </p>
+                    )}
                     <button className="go-button" type="button" onClick={beginNavigation}><Navigation aria-hidden="true" size={18} /> Go</button>
                   </>
                 )}

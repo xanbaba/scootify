@@ -6,6 +6,7 @@ import {
 } from "maplibre-gl";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { useCompassHeading, type Coordinate } from "./navigationHeading";
+import { reportPoint, type Report } from "./reports";
 import "maplibre-gl/dist/maplibre-gl.css";
 
 type RouteLine = { geometry: Coordinate[] };
@@ -19,6 +20,7 @@ export type PerspectiveProps = {
   route: NavigationRoute | null;
   destination?: Coordinate;
   racks: Coordinate[];
+  hazards: Report[];
   following: boolean;
   padding: () => PaddingOptions;
   onMap: (map: LibreMap | null) => void;
@@ -47,6 +49,7 @@ function makeStyle(): StyleSpecification {
       },
       racks: { type: "geojson", data: emptyFeatures() },
       route: { type: "geojson", data: emptyFeatures() },
+      hazards: { type: "geojson", data: emptyFeatures() },
     },
     layers: [
       { id: "ground", type: "background", paint: { "background-color": "#e5ede3" } },
@@ -67,6 +70,10 @@ function makeStyle(): StyleSpecification {
       { id: "endpoints", type: "circle", source: "route", filter: ["==", ["geometry-type"], "Point"], paint: {
         "circle-color": ["match", ["get", "role"], "parking", "#08755c", "#a54d13"], "circle-radius": 6,
         "circle-stroke-width": 2, "circle-stroke-color": "#ffffff",
+        "circle-pitch-alignment": "viewport", "circle-pitch-scale": "viewport",
+      } },
+      { id: "hazards", type: "circle", source: "hazards", paint: {
+        "circle-radius": 7, "circle-color": "#b84b18", "circle-stroke-color": "#ffffff", "circle-stroke-width": 2,
         "circle-pitch-alignment": "viewport", "circle-pitch-scale": "viewport",
       } },
     ],
@@ -156,7 +163,7 @@ export default function NavigationPerspective(props: PerspectiveProps) {
     };
   }, []);
 
-  const { destination, following, live, padding, position, racks, route, session } = props;
+  const { destination, following, hazards, live, padding, position, racks, route, session } = props;
   const heading = useCompassHeading(session) ?? props.heading;
 
   useEffect(() => {
@@ -168,6 +175,12 @@ export default function NavigationPerspective(props: PerspectiveProps) {
   useEffect(() => {
     (map?.getSource("route") as GeoJSONSource | undefined)?.setData(routeFeatures(route, destination));
   }, [destination, map, route]);
+
+  useEffect(() => {
+    (map?.getSource("hazards") as GeoJSONSource | undefined)?.setData({
+      type: "FeatureCollection", features: hazards.map((report) => pointFeature(reportPoint(report))),
+    });
+  }, [hazards, map]);
 
   useEffect(() => {
     if (!map || !marker.current) return;
