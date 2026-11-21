@@ -45,7 +45,7 @@ p { margin: 0.4rem 0 0; color: #456153; }
   background: #fff;
 }
 
-.staff-queue, .staff-history > div { display: grid; gap: 12px; }
+.staff-queue, .staff-history > div, .staff-closures { display: grid; gap: 12px; }
 .staff-queue-heading, .staff-report-heading, .staff-report-actions, .staff-report-votes {
   display: flex;
   align-items: center;
@@ -69,6 +69,18 @@ p { margin: 0.4rem 0 0; color: #456153; }
 }
 .staff-report h3, .staff-report p { margin: 0; overflow-wrap: anywhere; }
 .staff-report small { color: #456153; }
+.staff-report-status {
+  margin-left: auto;
+  padding: 4px 8px;
+  border-radius: 7px;
+  color: #23513e;
+  background: #e7f1e6;
+  font-size: 0.75rem;
+  font-weight: 720;
+  white-space: nowrap;
+}
+.staff-report-status[data-status="in_progress"] { color: #74451c; background: #fff0d6; }
+.staff-report-status[data-status="resolved"] { color: #49585a; background: #edf0ef; }
 .staff-report-icon {
   display: grid;
   flex: 0 0 38px;
@@ -79,6 +91,9 @@ p { margin: 0.4rem 0 0; color: #456153; }
   background: #ffeed0;
 }
 .staff-report-actions { justify-content: space-between; flex-wrap: wrap; }
+.staff-report-buttons { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.staff-closure { border-color: #e7b7b6; }
+.staff-closure .staff-report-heading > svg, .staff-report .staff-path-closed { color: #9a3034; }
 .staff-report-actions a { display: inline-flex; align-items: center; gap: 4px; font-size: 0.85rem; }
 .staff-report-actions button {
   padding: 7px 11px;
@@ -89,6 +104,7 @@ p { margin: 0.4rem 0 0; color: #456153; }
   font: 650 0.85rem system-ui, sans-serif;
   cursor: pointer;
 }
+.staff-report-actions .staff-close-path { border-color: #e7b7b6; color: #9a3034; background: #fff3f2; }
 .staff-history summary { width: fit-content; padding-block: 10px; color: #205b47; cursor: pointer; }
 
 @media (max-width: 30rem) {

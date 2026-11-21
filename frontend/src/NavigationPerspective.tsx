@@ -6,11 +6,11 @@ import {
 } from "maplibre-gl";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { useCompassHeading, type Coordinate } from "./navigationHeading";
-import { reportPoint, type Report } from "./reports";
+import { reportPoint, type ClosedPath, type Report } from "./reports";
 import "maplibre-gl/dist/maplibre-gl.css";
 
 type RouteLine = { geometry: Coordinate[] };
-type NavigationRoute = { approach?: RouteLine | null; ride: RouteLine; walk: RouteLine };
+type NavigationRoute = { approach?: RouteLine | null; ride: RouteLine | null; walk: RouteLine };
 
 export type PerspectiveProps = {
   session: number;
@@ -19,8 +19,10 @@ export type PerspectiveProps = {
   live: boolean;
   route: NavigationRoute | null;
   destination?: Coordinate;
+  parking?: Coordinate;
   racks: Coordinate[];
   hazards: Report[];
+  closures: ClosedPath[];
   following: boolean;
   padding: () => PaddingOptions;
   onMap: (map: LibreMap | null) => void;
@@ -50,6 +52,7 @@ function makeStyle(): StyleSpecification {
       racks: { type: "geojson", data: emptyFeatures() },
       route: { type: "geojson", data: emptyFeatures() },
       hazards: { type: "geojson", data: emptyFeatures() },
+      closures: { type: "geojson", data: emptyFeatures() },
     },
     layers: [
       { id: "ground", type: "background", paint: { "background-color": "#e5ede3" } },
@@ -67,6 +70,9 @@ function makeStyle(): StyleSpecification {
       { id: "walk", type: "line", source: "route", filter: ["==", ["get", "role"], "walk"],
         layout: { "line-cap": "round", "line-join": "round" },
         paint: { "line-color": "#b45921", "line-width": 5, "line-dasharray": [0.6, 1.6] } },
+      { id: "closures", type: "line", source: "closures",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": "#a83234", "line-width": 7, "line-dasharray": [1.15, 0.85] } },
       { id: "endpoints", type: "circle", source: "route", filter: ["==", ["geometry-type"], "Point"], paint: {
         "circle-color": ["match", ["get", "role"], "parking", "#08755c", "#a54d13"], "circle-radius": 6,
         "circle-stroke-width": 2, "circle-stroke-color": "#ffffff",
@@ -84,7 +90,7 @@ function pointFeature(point: Coordinate, role?: string): Feature<Point> {
   return { type: "Feature", properties: role ? { role } : {}, geometry: { type: "Point", coordinates: lngLat(point) } };
 }
 
-function routeFeatures(route: NavigationRoute | null, destination?: Coordinate): FeatureCollection {
+function routeFeatures(route: NavigationRoute | null, destination?: Coordinate, parking?: Coordinate): FeatureCollection {
   const features: Array<Feature<LineString | Point>> = [];
   if (route) {
     for (const leg of ["approach", "ride", "walk"] as const) {
@@ -95,9 +101,8 @@ function routeFeatures(route: NavigationRoute | null, destination?: Coordinate):
         geometry: { type: "LineString", coordinates: geometry.map(lngLat) },
       });
     }
-    const parking = route.walk.geometry[0];
-    if (parking) features.push(pointFeature(parking, "parking"));
   }
+  if (parking) features.push(pointFeature(parking, "parking"));
   if (destination) features.push(pointFeature(destination, "destination"));
   return { type: "FeatureCollection", features };
 }
@@ -163,7 +168,7 @@ export default function NavigationPerspective(props: PerspectiveProps) {
     };
   }, []);
 
-  const { destination, following, hazards, live, padding, position, racks, route, session } = props;
+  const { closures, destination, following, hazards, live, padding, parking, position, racks, route, session } = props;
   const heading = useCompassHeading(session) ?? props.heading;
 
   useEffect(() => {
@@ -173,14 +178,23 @@ export default function NavigationPerspective(props: PerspectiveProps) {
   }, [map, racks]);
 
   useEffect(() => {
-    (map?.getSource("route") as GeoJSONSource | undefined)?.setData(routeFeatures(route, destination));
-  }, [destination, map, route]);
+    (map?.getSource("route") as GeoJSONSource | undefined)?.setData(routeFeatures(route, destination, parking));
+  }, [destination, map, parking, route]);
 
   useEffect(() => {
     (map?.getSource("hazards") as GeoJSONSource | undefined)?.setData({
       type: "FeatureCollection", features: hazards.map((report) => pointFeature(reportPoint(report))),
     });
   }, [hazards, map]);
+
+  useEffect(() => {
+    (map?.getSource("closures") as GeoJSONSource | undefined)?.setData({
+      type: "FeatureCollection",
+      features: closures.map(({ geometry }) => ({
+        type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: geometry.map(lngLat) },
+      })),
+    });
+  }, [closures, map]);
 
   useEffect(() => {
     if (!map || !marker.current) return;

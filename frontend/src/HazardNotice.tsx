@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { TriangleAlert, X } from "lucide-react";
 import type { Coordinate } from "./navigationHeading";
 import { categories, getRiderId, reportPoint, reportRequest, type Report, type Vote } from "./reports";
 import type { LiveFix } from "./useLiveLocation";
 
 type ActiveRouteLeg = { geometry: Coordinate[]; segment_ids: string[] };
+const PASS_PROMPT_MS = 25_000;
 
 function projectAlong(point: Coordinate, line: Coordinate[]) {
   const longitudeScale = 111195 * Math.cos(point[0] * Math.PI / 180);
@@ -36,7 +37,9 @@ export function HazardNotice({ leg, liveFix, reports, hidden, onVoted }: {
   hidden: boolean;
   onVoted: () => void;
 }) {
-  const [seen, setSeen] = useState<Set<string>>(() => new Set());
+  const seen = useRef(new Set<string>());
+  const lastPosition = useRef<{ geometry: Coordinate[]; along: number } | null>(null);
+  const [feedbackId, setFeedbackId] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const [voting, setVoting] = useState<string | null>(null);
   const [error, setError] = useState<{ id: string; message: string } | null>(null);
@@ -47,25 +50,45 @@ export function HazardNotice({ leg, liveFix, reports, hidden, onVoted }: {
       .map((report) => ({ report, ...projectAlong(reportPoint(report), leg.geometry) }))
       .filter(({ distance }) => distance <= 5);
   }, [leg, reports]);
-  const position = leg && liveFix && liveFix.accuracy <= 40 ? projectAlong(liveFix.point, leg.geometry) : null;
-  const nearby = position && position.distance <= 30
+  const projectedPosition = leg && liveFix && liveFix.accuracy <= 40 ? projectAlong(liveFix.point, leg.geometry) : null;
+  const along = projectedPosition && projectedPosition.distance <= 30 ? projectedPosition.along : null;
+  const nearby = along !== null
     ? locations.filter(({ report }) => !dismissed.has(report.id))
-      .map(({ report, along }) => ({ report, ahead: along - position.along }))
+      .map(({ report, along: marker }) => ({ report, ahead: marker - along }))
       .sort((a, b) => Math.abs(a.ahead) - Math.abs(b.ahead))
     : [];
   const upcoming = nearby.find(({ ahead }) => ahead >= -8 && ahead <= 65);
-  const passed = nearby.find(({ report, ahead }) => ahead < -8 && ahead >= -50 && seen.has(report.id));
-  const notice = passed ?? upcoming;
-  const id = notice?.report.id;
-  const isUpcoming = Boolean(notice && !passed);
+  const upcomingId = upcoming?.report.id;
+  const feedback = reports.find(({ id }) => id === feedbackId && !dismissed.has(id));
 
   useEffect(() => {
-    if (hidden || !id || !isUpcoming) return;
-    setSeen((previous) => previous.has(id) ? previous : new Set([...previous, id]));
-  }, [hidden, id, isUpcoming]);
+    if (hidden || !leg || along === null) return;
+    const previous = lastPosition.current;
+    lastPosition.current = { geometry: leg.geometry, along };
+    if (upcomingId) seen.current.add(upcomingId);
+    if (feedbackId) return;
+    const passed = locations.find(({ report, along: marker }) => {
+      const past = along - marker;
+      if (dismissed.has(report.id) || past <= 8 || past > 110) return false;
+      return seen.current.has(report.id) || (
+        previous?.geometry === leg.geometry && previous.along <= marker && along - previous.along <= 150
+      );
+    });
+    if (passed) setFeedbackId(passed.report.id);
+  }, [along, dismissed, feedbackId, hidden, leg, locations, upcomingId]);
+
+  useEffect(() => {
+    if (!feedbackId) return;
+    const timer = window.setTimeout(() => {
+      setDismissed((previous) => new Set([...previous, feedbackId]));
+      setFeedbackId(null);
+    }, PASS_PROMPT_MS);
+    return () => window.clearTimeout(timer);
+  }, [feedbackId]);
 
   function dismiss(reportId: string) {
     setDismissed((previous) => new Set([...previous, reportId]));
+    setFeedbackId((previous) => previous === reportId ? null : previous);
   }
 
   async function submitVote(reportId: string, vote: Vote) {
@@ -87,19 +110,19 @@ export function HazardNotice({ leg, liveFix, reports, hidden, onVoted }: {
     }
   }
 
-  if (hidden || !notice) return null;
-  const { report } = notice;
+  const report = feedback ?? upcoming?.report;
+  if (hidden || !report) return null;
   return (
     <aside className="hazard-notice" aria-label="Route hazard">
       <div className="hazard-notice-heading">
         <TriangleAlert aria-hidden="true" size={21} />
         <div role="status">
-          <strong>{categories[report.category]} {passed ? "just passed" : "ahead"}</strong>
+          <strong>{categories[report.category]} {feedback ? "just passed" : "ahead"}</strong>
           {report.description && <small>{report.description}</small>}
         </div>
         <button type="button" className="plain-icon" aria-label="Dismiss hazard warning" onClick={() => dismiss(report.id)}><X aria-hidden="true" size={20} /></button>
       </div>
-      {passed && (
+      {feedback && (
         <div className="hazard-votes">
           <button type="button" className="sheet-secondary" disabled={voting !== null} onClick={() => void submitVote(report.id, "still_there")}>Still there</button>
           <button type="button" className="sheet-secondary" disabled={voting !== null} onClick={() => void submitVote(report.id, "looks_clear")}>Looks clear</button>

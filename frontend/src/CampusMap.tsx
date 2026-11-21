@@ -11,7 +11,7 @@ import { HazardNotice } from "./HazardNotice";
 import { HazardReportForm } from "./HazardReportForm";
 import type { PerspectiveProps } from "./NavigationPerspective";
 import { categories, reportPoint, useReports, type ReportPath } from "./reports";
-import { useLiveLocation } from "./useLiveLocation";
+import { useLiveLocation, type LiveFix } from "./useLiveLocation";
 import { requestCompassAccess, routeHeading, type Coordinate } from "./navigationHeading";
 import "@fontsource-variable/manrope";
 import "leaflet/dist/leaflet.css";
@@ -44,18 +44,36 @@ type RouteLeg = { geometry: Coordinate[]; segment_ids: string[]; duration_second
 type TripRoute = {
   rack_id: string;
   approach?: RouteLeg | null;
-  ride: RouteLeg;
+  ride: RouteLeg | null;
   walk: RouteLeg;
   snap_distance_m: number;
   destination_snap_distance_m: number;
 };
 type RouteResult = { route: TripRoute } | { error: string; retryable?: boolean };
+type TripSession = {
+  start: StartSelection | null;
+  destination: DestinationSelection | null;
+  routeMode: RouteMode;
+  navigating: boolean;
+  parkedRackId: string | null;
+  riding: boolean;
+};
 
 const rideStyle = { color: "#08755c", weight: 7 };
 const walkStyle = { color: "#b45921", weight: 6, dashArray: "3 8" };
 const routeOutline = { color: "#ffffff", weight: 11, opacity: 0.94 };
 const rackStyle = { color: "#fff", weight: 1.4, fillColor: "#276954", fillOpacity: 0.9 };
 const hazardStyle = { color: "#fff", weight: 2, fillColor: "#b84b18", fillOpacity: 1 };
+const tripSessionKey = "scootify-trip";
+
+function restoreTrip(): TripSession | null {
+  try {
+    const saved = sessionStorage.getItem(tripSessionKey);
+    return saved ? JSON.parse(saved) : null;
+  } catch {
+    return null;
+  }
+}
 
 function requestPoint(point: Coordinate): Location {
   return { latitude: point[0], longitude: point[1] };
@@ -123,45 +141,55 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   const sheet = useRef<HTMLElement | null>(null);
   const locationRequest = useRef(0);
   const reportLocationRequest = useRef(0);
-  const previewReportKey = useRef("");
-  const navigationSequence = useRef(0);
+  const [savedTrip] = useState(restoreTrip);
+  const restoredStart = savedTrip?.start?.source === "gps" && !savedTrip.navigating ? null : savedTrip?.start ?? null;
+  const navigationSequence = useRef(savedTrip?.navigating ? 1 : 0);
   const alignedSession = useRef<number | null>(null);
+  const navigationFix = useRef<LiveFix | null>(null);
+  const plannedNetwork = useRef<string | null>(null);
   const [sheetHeight, setSheetHeight] = useState(0);
-  const [start, setStart] = useState<StartSelection | null>(null);
-  const [destination, setDestination] = useState<DestinationSelection | null>(null);
+  const [start, setStart] = useState<StartSelection | null>(restoredStart);
+  const [destination, setDestination] = useState<DestinationSelection | null>(savedTrip?.destination ?? null);
   const [picking, setPicking] = useState<MapSelection | null>(null);
   const [pinMessage, setPinMessage] = useState("");
   const [showStartOptions, setShowStartOptions] = useState(false);
   const [showRacks, setShowRacks] = useState(true);
-  const [locating, setLocating] = useState(true);
+  const [locating, setLocating] = useState(!restoredStart);
   const [locationMessage, setLocationMessage] = useState("");
   const [result, setResult] = useState<RouteResult | null>(null);
-  const [routeMode, setRouteMode] = useState<RouteMode>("fast");
+  const [routeMode, setRouteMode] = useState<RouteMode>(savedTrip?.routeMode ?? "fast");
   const [attempt, setAttempt] = useState(0);
-  const [navigation, setNavigation] = useState<number | null>(null);
+  const [navigation, setNavigation] = useState<number | null>(savedTrip?.navigating ? 1 : null);
+  const [updatingRoute, setUpdatingRoute] = useState(false);
   const [perspectiveReady, setPerspectiveReady] = useState(false);
   const [perspectiveUnavailable, setPerspectiveUnavailable] = useState(false);
   const [following, setFollowing] = useState(true);
-  const [confirmedLeg, setConfirmedLeg] = useState<"ride" | "walk" | null>(null);
+  const [riding, setRiding] = useState(Boolean(savedTrip?.riding));
+  const [parkedRackId, setParkedRackId] = useState<string | null>(savedTrip?.parkedRackId ?? null);
   const [reporting, setReporting] = useState(false);
   const [reportPin, setReportPin] = useState<Coordinate | null>(null);
   const [reportPath, setReportPath] = useState<ReportPath | null>(null);
   const [reportLocationMessage, setReportLocationMessage] = useState("");
   const [reportPosted, setReportPosted] = useState(false);
-  const { reports, refresh: refreshReports } = useReports();
+  const { reports, closures, refresh: refreshReports } = useReports();
   const tracking = useLiveLocation(navigation);
   const liveFix = tracking?.fix;
-  const route = result && "route" in result ? result.route : null;
-  const activeLeg: ActiveLeg = confirmedLeg ?? (route?.approach ? "approach" : "ride");
+  const closedSegments = new Set(closures.map(({ segment_id }) => segment_id));
+  const candidateRoute = result && "route" in result ? result.route : null;
+  const usesClosedPath = candidateRoute && [candidateRoute.approach, candidateRoute.ride, candidateRoute.walk]
+    .some((leg) => leg?.segment_ids.some((segment) => closedSegments.has(segment)));
+  const route = usesClosedPath ? null : candidateRoute;
+  const activeLeg: ActiveLeg = parkedRackId ? "walk" : !riding && route?.approach ? "approach" : "ride";
   const failure = result && "error" in result ? result : null;
   const namedId = destination && "id" in destination ? destination.id : "";
   const namedDestination = campus.destinations.find(({ id }) => id === namedId);
   const destinationPin = destination && "point" in destination ? destination.point : null;
   const destinationPoint = destinationPin ?? namedDestination?.point;
   const destinationLabel = namedDestination ? placeName(namedDestination) : "Pinned destination";
-  const parkingPoint = route?.walk.geometry[0];
+  const parking = campus.routable_racks.find(({ id }) => id === (parkedRackId ?? route?.rack_id));
+  const parkingPoint = parking?.point;
   const parkingSide = parkingPoint && destinationPoint && parkingPoint[1] > destinationPoint[1] ? "right" : "left";
-  const parkingName = campus.routable_racks.find(({ id }) => id === route?.rack_id)?.name ?? "Parking rack";
+  const parkingName = parking?.name ?? "Parking rack";
   const selectedRack = racks?.find(({ id }) => id === route?.rack_id);
   const campusBounds = latLngBounds(campus.bounds);
   const liveOnCampus = liveFix && campusBounds.contains(liveFix.point);
@@ -218,40 +246,54 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   }, [campus.bounds]);
 
   useEffect(() => {
-    locate();
+    if (!restoredStart) locate();
     return () => { locationRequest.current += 1; };
-  }, [locate]);
+  }, [locate, restoredStart]);
 
-  const activeReportKey = reports.map(({ id }) => id).join(",");
   useEffect(() => {
-    if (isNavigating || previewReportKey.current === activeReportKey) return;
-    previewReportKey.current = activeReportKey;
-    if (start && destination) setAttempt((previous) => previous + 1);
-  }, [activeReportKey, destination, isNavigating, start]);
+    navigationFix.current = liveOnCampus && liveFix && !tracking?.error && liveFix.accuracy <= 40 ? liveFix : null;
+  }, [liveFix, liveOnCampus, tracking?.error]);
 
+  useEffect(() => {
+    const saved: TripSession = { start, destination, routeMode, navigating: isNavigating, parkedRackId, riding };
+    try { sessionStorage.setItem(tripSessionKey, JSON.stringify(saved)); } catch { /* Storage is optional. */ }
+  }, [destination, isNavigating, parkedRackId, riding, routeMode, start]);
+
+  const routingKey = reports.map(({ id }) => id).join(",") + "|" + [...closedSegments].sort().join(",");
   useEffect(() => {
     if (!start || !destination) return;
+    const networkChanged = plannedNetwork.current !== null && plannedNetwork.current !== routingKey;
+    plannedNetwork.current = routingKey;
+    const currentFix = isNavigating ? navigationFix.current : null;
+    const origin = currentFix ? requestPoint(currentFix.point)
+      : parkedRackId || start.source === "bookstore" ? null : requestPoint(start.point);
+    setUpdatingRoute(true);
     const controller = new AbortController();
     const timeout = window.setTimeout(() => {
       controller.abort();
+      setUpdatingRoute(false);
       setResult({ error: "The route service timed out.", retryable: true });
     }, 8000);
 
-    async function calculateTrip(origin: StartSelection, target: DestinationSelection) {
+    async function calculateTrip(target: DestinationSelection) {
       try {
         const response = await fetch("/api/route", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             ...("id" in target ? { destination_id: target.id } : { destination: requestPoint(target.point) }),
-            start: origin.source === "bookstore" ? null : requestPoint(origin.point),
+            start: origin,
             mode: routeMode,
+            parked_rack_id: parkedRackId,
           }),
           signal: controller.signal,
         });
         if (response.ok) {
           const trip: TripRoute = await response.json();
-          if (!controller.signal.aborted) setResult({ route: trip });
+          if (!controller.signal.aborted) {
+            if (networkChanged && currentFix && trip.approach) setRiding(false);
+            setResult({ route: trip });
+          }
         } else if (response.status === 404) {
           const body: { detail?: unknown } = await response.json();
           if (!controller.signal.aborted) {
@@ -266,15 +308,16 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
         }
       } finally {
         window.clearTimeout(timeout);
+        if (!controller.signal.aborted) setUpdatingRoute(false);
       }
     }
 
-    void calculateTrip(start, destination);
+    void calculateTrip(destination);
     return () => {
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [start, destination, attempt, routeMode]);
+  }, [start, destination, attempt, routeMode, routingKey, isNavigating, parkedRackId]);
 
   const viewportPadding = useCallback(() => {
     const bounds = sheet.current?.getBoundingClientRect();
@@ -321,7 +364,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
 
   useEffect(() => {
     if (isNavigating || reporting || !route || !start || !destinationPoint) return;
-    const points = [start.point, destinationPoint, ...(route.approach?.geometry ?? []), ...route.ride.geometry, ...route.walk.geometry];
+    const points = [start.point, destinationPoint, ...(route.approach?.geometry ?? []), ...(route.ride?.geometry ?? []), ...route.walk.geometry];
     map.current?.fitBounds(latLngBounds(points), { ...viewportPadding(), maxZoom: 18, animate: false });
   }, [route, start, destinationPoint, isNavigating, reporting, sheetHeight, viewportPadding]);
 
@@ -446,11 +489,15 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
     setPerspectiveUnavailable(false);
     setNavigation(++navigationSequence.current);
     setFollowing(true);
-    setConfirmedLeg(null);
+    setRiding(false);
+    setParkedRackId(null);
   }
 
   function endNavigation() {
     setNavigation(null);
+    setParkedRackId(null);
+    setRiding(false);
+    setResult(null);
     if (liveFix && liveOnCampus) chooseStart(liveFix.point, "gps");
   }
 
@@ -514,6 +561,12 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
         {routeLegs.filter(({ leg }) => leg.geometry.length > 1).map(({ key, leg }) => (
           <Polyline key={key} positions={leg.geometry} pathOptions={key === "ride" ? rideStyle : walkStyle} className={key === "ride" ? "trip-ride" : "trip-walk"} interactive={false} />
         ))}
+        {closures.map((path) => (
+          <Polyline key={path.segment_id} positions={path.geometry} className="closed-path"
+            pathOptions={{ color: "#a83234", weight: 7, dashArray: "8 6" }}>
+            <Tooltip>Path closed</Tooltip>
+          </Polyline>
+        ))}
         {showRacks && rackMarkers.filter(({ id }) => id !== route?.rack_id).map(({ id, point, rack, name }) => (
           <CircleMarker
             key={id}
@@ -560,7 +613,8 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
           <NavigationPerspective
             session={navigation}
             position={guidancePosition} heading={guidanceHeading} live={Boolean(liveOnCampus)}
-            route={route} destination={destinationPoint} racks={rackPoints} hazards={reports} following={following && !reporting}
+            route={route} destination={destinationPoint} parking={parkingPoint} racks={rackPoints}
+            hazards={reports} closures={closures} following={following && !reporting}
             padding={navigationPadding} onMap={attachPerspective} onExplore={pauseFollowing} onUnavailable={fallBackToFlat}
           />
         </Suspense>
@@ -569,7 +623,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
       {isNavigating && (
         <HazardNotice key={navigation} leg={route?.[activeLeg] ?? undefined}
           liveFix={liveOnCampus && !tracking?.error ? liveFix : undefined}
-          reports={routeWarnings} hidden={reporting} onVoted={refreshReports} />
+          reports={reports} hidden={reporting} onVoted={refreshReports} />
       )}
       {reportPosted && <div className="report-toast" role="status">Hazard posted</div>}
 
@@ -621,11 +675,13 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
               <div className="next-leg">
                 <span className={activeLeg === "ride" ? "leg-icon" : "leg-icon walk"}>{activeLeg === "ride" ? <Bike aria-hidden="true" size={22} /> : <Footprints aria-hidden="true" size={22} />}</span>
                 <div><strong>{legLabels[activeLeg]}</strong><small>{activeLeg === "approach" ? "Walk with your bike or scooter" : "Follow the " + (activeLeg === "ride" ? "solid" : "dashed") + " line"}</small></div>
-                {activeLeg === "approach" && <button className="sheet-secondary" type="button" onClick={() => setConfirmedLeg("ride")}>Start riding <ArrowRight aria-hidden="true" size={15} /></button>}
-                {activeLeg === "ride" && <button className="sheet-secondary" type="button" onClick={() => setConfirmedLeg("walk")}>I parked <ArrowRight aria-hidden="true" size={15} /></button>}
+                {activeLeg === "approach" && <button className="sheet-secondary" type="button" onClick={() => setRiding(true)}>Start riding <ArrowRight aria-hidden="true" size={15} /></button>}
+                {activeLeg === "ride" && <button className="sheet-secondary" type="button" onClick={() => setParkedRackId(route.rack_id)}>I parked <ArrowRight aria-hidden="true" size={15} /></button>}
               </div>
             )}
             {!route && <p className="sheet-note" role="status">{failure?.error ?? "Updating your route…"}</p>}
+            {updatingRoute && route && <p className="sheet-note" role="status">Updating your route…</p>}
+            {failure?.retryable && <button className="sheet-secondary gps-retry" type="button" onClick={() => setAttempt((previous) => previous + 1)}>Retry route</button>}
             {perspectiveUnavailable && <p className="sheet-note" role="status">Tilted view is unavailable. GPS can still follow your location on the overhead map.</p>}
             {tracking?.error && <button className="sheet-secondary gps-retry" type="button" onClick={() => setNavigation(++navigationSequence.current)}>Retry GPS</button>}
           </>

@@ -27,11 +27,21 @@ export type Report = {
   latitude: number;
   longitude: number;
   created_at: string;
+  status: "open" | "in_progress" | "resolved";
   resolved_at: string | null;
   still_there: number;
   looks_clear: number;
   last_confirmed_at: string | null;
 };
+
+export type ClosedPath = {
+  segment_id: string;
+  closed_at: string;
+  name: string;
+  geometry: Coordinate[];
+};
+
+type RoutingState = { reports: Report[]; closures: ClosedPath[] };
 
 export async function reportRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, options);
@@ -43,7 +53,7 @@ export async function reportRequest<T>(path: string, options?: RequestInit): Pro
 }
 
 export function useReports(staff = false) {
-  const [reports, setReports] = useState<Report[]>([]);
+  const [state, setState] = useState<RoutingState>({ reports: [], closures: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
@@ -56,29 +66,32 @@ export function useReports(staff = false) {
       if (pending) return;
       pending = true;
       try {
-        const next = await reportRequest<Report[]>(staff ? "/api/admin/reports" : "/api/reports", { signal: controller.signal });
+        const next = await reportRequest<RoutingState>(staff ? "/api/admin/routing-state" : "/api/routing-state", { signal: controller.signal });
         if (!controller.signal.aborted) {
-          setReports(next);
+          setState(next);
           setError("");
         }
       } catch {
-        if (!controller.signal.aborted) setError("Could not load hazard reports.");
+        if (!controller.signal.aborted) setError("Could not load campus reports and closures.");
       } finally {
         pending = false;
         if (!controller.signal.aborted) setLoading(false);
       }
     }
     void load();
-    const timer = window.setInterval(() => {
+    const updateWhenVisible = () => {
       if (document.visibilityState === "visible") void load();
-    }, 5000);
+    };
+    const timer = window.setInterval(updateWhenVisible, 2000);
+    document.addEventListener("visibilitychange", updateWhenVisible);
     return () => {
       controller.abort();
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", updateWhenVisible);
     };
   }, [revision, staff]);
 
-  return { reports, loading, error, refresh };
+  return { ...state, loading, error, refresh };
 }
 
 let riderId: string | undefined;
