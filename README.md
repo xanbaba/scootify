@@ -34,9 +34,9 @@ Run `npm.cmd run build` from `frontend` to type-check and build the frontend. Ru
 ## HackJam demo
 
 - **Primary track** — Home Turf. Scootify addresses a local USF Tampa problem by connecting students who report path hazards with the campus staff who can fix them. [HackJam ’26 tracks](https://www.mlh.com/events/hackjam-26)
-- **Trip** — Choose **Use Bookstore** and select **USF Tampa Library** for a repeatable demo. The map draws a solid bike leg to the selected rack and a dashed walk to the main entrance. [USF campus ride, checkpoints 3–4](https://www.cutr.usf.edu/2026/07/roll-safe-bulls/) · [Tampa Library entrance](https://lib.usf.edu/news/new-entrance-for-tampa-library-sets-november-opening/)
+- **Trip** — Under **Set start** or **Change**, choose **Use Bookstore**, then choose **Library** for a repeatable demo. The map draws a solid bike leg to the selected rack and a dashed walk to the main entrance. [USF campus ride, checkpoints 3–4](https://www.cutr.usf.edu/2026/07/roll-safe-bulls/) · [Tampa Library entrance](https://lib.usf.edu/news/new-entrance-for-tampa-library-sets-november-opening/)
 - **Closure scenario** — Simulate a pothole on the Collins Boulevard approach path (`osm-43877414-3566360615-557390886`). The campus graph gives the Bookstore trip a different approach to the east rack when that segment is removed.
-- **Navigation design** — Open to a map with destination search. Pick a destination, preview the ride to parking and walk to the entrance, then tap **Go** to follow your GPS position. Allow reporting a path problem from the map. Keep reports and closure controls in a staff dashboard.
+- **Live guidance** — Choose a destination, preview the trip, then tap **Go** to follow live browser location on the map. Tap **I parked** to switch the guidance card to the walking leg. **End trip** stops tracking.
 
 ## Campus data
 
@@ -45,7 +45,9 @@ Run `npm.cmd run build` from `frontend` to type-check and build the frontend. Ru
 
 ## Route preview
 
-The student view uses the browser’s current location when permission is granted. Select a named building or use **Pin destination**. Use **Pin start** if location is unavailable or to choose another start. Pins show the selected coordinates. Route lines start and finish on mapped paths near those coordinates.
+The student view uses the browser’s current location when permission is granted. Search for a building or use **Drop a pin**. Use **Pin start** if location is unavailable or to choose another start. Pins show the selected coordinates. Route lines start and finish on mapped paths near those coordinates.
+
+**Go** uses `navigator.geolocation.watchPosition` while the trip is active and the page is visible. The watch is cleared when the trip ends or the page goes into the background. A deployed app needs HTTPS for location access. The local loopback address works for development. [Browser geolocation requirements](https://developer.mozilla.org/en-US/docs/Web/API/Geolocation/watchPosition)
 
 `POST /api/route` accepts either a `destination_id` or a `destination` coordinate, plus an optional `start` coordinate. Coordinates have `latitude` and `longitude` fields. Omit `start` for the explicit Bookstore preset. The response contains the selected rack ID, both legs’ coordinates, segment IDs, distances, times, and how far each requested endpoint was from its mapped path.
 
@@ -53,6 +55,6 @@ Two Dijkstra searches calculate cycling time from the start and walking time to 
 
 ## Frameworks, data, and AI credits
 
-- Frontend uses [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Vite](https://vite.dev/), [Leaflet](https://leafletjs.com/), and [React Leaflet](https://react-leaflet.js.org/).
+- Frontend uses [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Vite](https://vite.dev/), [Leaflet](https://leafletjs.com/), and [React Leaflet](https://react-leaflet.js.org/). Icons use [Lucide](https://lucide.dev/), and the student view uses [Manrope](https://fontsource.org/fonts/manrope).
 - Backend uses [FastAPI](https://fastapi.tiangolo.com/), [Pydantic](https://docs.pydantic.dev/), and [Uvicorn](https://www.uvicorn.org/).
-- OpenAI Codex helped plan milestones and generated the initial scaffold, rack importer, demo graph, routing, interactive map, tests, and documentation. The project entrant supplied the concept, parking and navigation requirements, campus use case, stack choice, and event rules. Update this record as the project develops and include AI use in the HackJam submission.
+- OpenAI Codex helped plan milestones and generated the initial scaffold, rack importer, demo graph, routing, student interface, live GPS integration, tests, and documentation. The project entrant supplied the concept, parking and navigation requirements, interface reference, campus use case, stack choice, and event rules. Update this record as the project develops and include AI use in the HackJam submission.

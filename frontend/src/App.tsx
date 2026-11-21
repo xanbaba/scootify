@@ -65,15 +65,6 @@ function ApiStatus() {
   );
 }
 
-function StudentView() {
-  return (
-    <>
-      <h1>Plan a campus trip</h1>
-      <CampusMap />
-    </>
-  );
-}
-
 function AdminView() {
   return (
     <>
@@ -91,19 +82,20 @@ export function App() {
   const isStudent = path === "/";
   const isAdmin = path === "/admin";
 
+  if (isStudent) return <CampusMap />;
+
   return (
     <div className="shell">
       <header className="site-header">
         <a className="brand" href="/">Scootify</a>
         <nav aria-label="Views">
-          <a href="/" aria-current={isStudent ? "page" : undefined}>Student</a>
+          <a href="/">Student</a>
           <a href="/admin" aria-current={isAdmin ? "page" : undefined}>Admin</a>
         </nav>
       </header>
       <main>
-        {isStudent && <StudentView />}
         {isAdmin && <AdminView />}
-        {!isStudent && !isAdmin && (
+        {!isAdmin && (
           <>
             <h1>Page unavailable</h1>
             <a href="/">Back to student view</a>
