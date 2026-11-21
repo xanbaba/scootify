@@ -70,19 +70,6 @@ function StudentView() {
     <>
       <h1>Plan a campus trip</h1>
       <CampusMap />
-      <section className="panel trip-summary" aria-labelledby="demo-title">
-        <h2 id="demo-title">USF Tampa Library demo</h2>
-        <dl className="trip-details">
-          <div>
-            <dt>Start</dt>
-            <dd>USF Bookstore bike rack</dd>
-          </div>
-          <div>
-            <dt>Travel</dt>
-            <dd>Bike to the library’s front rack, then walk to the main entrance</dd>
-          </div>
-        </dl>
-      </section>
     </>
   );
 }

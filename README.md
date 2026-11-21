@@ -29,13 +29,13 @@ npm.cmd run dev -- --host 127.0.0.1
 
 Open both views and check for **API connected**. If the API starts after the frontend, use **Retry** to run the health check again.
 
-Run `npm.cmd run build` from `frontend` to type-check and build the frontend. Run `.\.venv\Scripts\python.exe -m unittest backend.test_campus` from the repository root to check graph connectivity and the closure detour.
+Run `npm.cmd run build` from `frontend` to type-check and build the frontend. Run `.\.venv\Scripts\python.exe -m unittest discover` from the repository root to check graph connectivity, rack ranking, and route availability.
 
 ## HackJam demo
 
 - **Primary track** — Home Turf. Scootify addresses a local USF Tampa problem by connecting students who report path hazards with the campus staff who can fix them. [HackJam ’26 tracks](https://www.mlh.com/events/hackjam-26)
-- **Trip** — Start at the USF Bookstore rack. Ride to the east rack in front of Tampa Library and walk to the main entrance. The map shows the primary approach via Apple Drive and the detour via the southbound Leroy Collins Boulevard bike lane. The checked-in graph connects the Bookstore rack and both front library racks. [USF campus ride, checkpoints 3–4](https://www.cutr.usf.edu/2026/07/roll-safe-bulls/) · [Tampa Library entrance](https://lib.usf.edu/news/new-entrance-for-tampa-library-sets-november-opening/)
-- **Closure scenario** — Simulate a pothole on the Collins Boulevard approach path (`osm-43877414-557390886-557390911`). The 544 m primary approach uses this segment. The 570 m detour avoids it. Both connect to the same rack and its 23 m walking approach. Select the path on the map to find the closure demo segment.
+- **Trip** — Select **USF Tampa Library** to preview the trip from the Bookstore rack. The map draws a solid bike leg to the selected rack and a dashed walk to the main entrance. Use **Pick start on map** to start elsewhere along the demo corridor. The checked-in graph connects the Bookstore rack and both front library racks. [USF campus ride, checkpoints 3–4](https://www.cutr.usf.edu/2026/07/roll-safe-bulls/) · [Tampa Library entrance](https://lib.usf.edu/news/new-entrance-for-tampa-library-sets-november-opening/)
+- **Closure scenario** — Simulate a pothole on the Collins Boulevard approach path (`osm-43877414-557390886-557390911`). The 544 m primary approach uses this segment. The 570 m detour avoids it. Both connect to the east rack and its 23 m walking approach.
 - **Navigation design** — Open to a map with destination search. Pick a destination, preview the ride to parking and walk to the entrance, then tap **Go** to follow your GPS position. Allow reporting a path problem from the map. Keep reports and closure controls in a staff dashboard.
 
 ## Campus data
@@ -43,8 +43,14 @@ Run `npm.cmd run build` from `frontend` to type-check and build the frontend. Ru
 - **Parking** — The importer reads all 258 Tampa rack records observed on November 21, 2026, along with their coordinates, condition, and locking-loop counts. USF designates bicycle racks for both bicycles and e-scooters. The [USF ArcGIS service item](https://www.arcgis.com/home/item.html?id=f886ea3ed4084c609d6f35c81b92f7dc) is public and its license field is blank. The app reads a local cache that Git ignores. If the import is unavailable, the map still shows the demo graph and its three linked rack locations. [USF rack layer](https://gis.usf.edu/fmserver/rest/services/Campus_Transportation/Parking_Transportation/MapServer/18) · [USF e-scooter parking guidance](https://www.usf.edu/public-safety/environmental-health-safety/programs-services/e-scooter.aspx)
 - **Paths** — `backend/data/usf-tampa-demo.json` uses OpenStreetMap geometry and a small set of rack connections. The graph data is available under the Open Database License (ODbL). Segments have stable IDs, walking and bicycle access flags, and direction where applicable. The graph covers the demo corridor. The student can zoom out to see the full rack inventory. [OpenStreetMap contributors and ODbL](https://www.openstreetmap.org/copyright)
 
+## Route preview
+
+`POST /api/route` takes a `destination_id` and an optional `start` with `latitude` and `longitude`. Omit `start` to use the Bookstore preset. Map starts snap to a mapped bicycle segment within 35 m and respect its direction. The response contains the selected rack ID and each leg’s coordinates, segment IDs, distance, and estimated time.
+
+Two Dijkstra searches calculate cycling time from the start and walking time back from the destination on reversed walking edges. The planner chooses the connected rack with the lowest total time. Estimates assume 4 m/s on the bike and 1.4 m/s on foot. The current preview supports bicycle trips to Tampa Library.
+
 ## Frameworks, data, and AI credits
 
 - Frontend uses [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Vite](https://vite.dev/), [Leaflet](https://leafletjs.com/), and [React Leaflet](https://react-leaflet.js.org/).
 - Backend uses [FastAPI](https://fastapi.tiangolo.com/), [Pydantic](https://docs.pydantic.dev/), and [Uvicorn](https://www.uvicorn.org/).
-- OpenAI Codex helped plan milestones and generated the initial scaffold, rack importer, demo graph and checks, interactive map, and documentation. The project entrant supplied the concept, parking and navigation requirements, campus use case, stack choice, and event rules. Update this record as the project develops and include AI use in the HackJam submission.
+- OpenAI Codex helped plan milestones and generated the initial scaffold, rack importer, demo graph, routing, interactive map, tests, and documentation. The project entrant supplied the concept, parking and navigation requirements, campus use case, stack choice, and event rules. Update this record as the project develops and include AI use in the HackJam submission.

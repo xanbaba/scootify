@@ -1,39 +1,25 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { latLngBounds, type Map as LeafletMap, type PathOptions } from "leaflet";
-import { CircleMarker, MapContainer, Polyline, Popup, TileLayer, Tooltip } from "react-leaflet";
+import { CircleMarker, MapContainer, Polyline, Popup, TileLayer, Tooltip, useMapEvents } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 
 type Location = { latitude: number; longitude: number };
 type Coordinate = [number, number];
 type Rack = Location & { id: string; condition: string | null; loops: number | null };
 type CampusNode = Location & { id: string };
-type Segment = {
-  id: string;
-  name: string;
-  geometry: Coordinate[];
-  modes: ("walk" | "bike")[];
-};
 type CampusGraph = {
   nodes: CampusNode[];
-  segments: Segment[];
-  rack_connections: { rack_id: string; node_id: string }[];
-  demo: {
-    origin_node: string;
-    parking_node: string;
-    entrance_node: string;
-    closure_segment: string;
-    primary_segments: string[];
-    detour_segments: string[];
-    walk_segments: string[];
-  };
+  segments: { id: string; geometry: Coordinate[]; modes: ("walk" | "bike")[] }[];
+  rack_connections: { rack_id: string; node_id: string; name: string }[];
+  destinations: { id: string; name: string; entrance_node: string }[];
+  demo: { origin_node: string };
 };
+type RouteLeg = { geometry: Coordinate[]; distance_m: number; duration_seconds: number };
+type TripRoute = { rack_id: string; ride: RouteLeg; walk: RouteLeg; snap_distance_m: number };
+type RouteResult = { route: TripRoute } | { error: string; retryable?: boolean };
 
-const pathStyles = {
-  primary: { color: "#127453", weight: 5, opacity: 0.95 },
-  detour: { color: "#3456a1", weight: 5, opacity: 0.95, dashArray: "9 6" },
-  shared: { color: "#324744", weight: 5, opacity: 0.9 },
-  walk: { color: "#a54d13", weight: 5, opacity: 0.95, dashArray: "2 7" },
-} satisfies Record<string, PathOptions>;
+const rideStyle = { className: "trip-ride", color: "#127453", weight: 6, interactive: false };
+const walkStyle = { className: "trip-walk", color: "#a54d13", weight: 5, dashArray: "4 5", interactive: false };
 
 function position(location: Location): Coordinate {
   return [location.latitude, location.longitude];
@@ -42,7 +28,7 @@ function position(location: Location): Coordinate {
 async function getCampusData<T>(path: string, signal: AbortSignal): Promise<T> {
   const response = await fetch(path, { signal });
   if (!response.ok) {
-    throw new Error(`Campus data request returned ${response.status}`);
+    throw new Error("Campus data request returned " + response.status);
   }
   return response.json();
 }
@@ -57,50 +43,152 @@ function RackDetails({ rack }: { rack?: Rack }) {
   );
 }
 
+function MapStartPicker({ onPick }: { onPick: ((point: Coordinate) => void) | null }) {
+  useMapEvents({
+    click: ({ latlng }) => onPick?.([latlng.lat, latlng.lng]),
+  });
+  return null;
+}
+
+function formatTime(seconds: number): string {
+  const rounded = Math.round(seconds);
+  const minutes = Math.floor(rounded / 60);
+  const remainder = rounded % 60;
+  return minutes ? minutes + " min" + (remainder ? " " + remainder + " sec" : "") : rounded + " sec";
+}
+
+const boundsOptions = { padding: [42, 42] as Coordinate, maxZoom: 18 };
+
 function LoadedCampusMap({ graph, racks }: { graph: CampusGraph; racks: Rack[] | null }) {
   const map = useRef<LeafletMap | null>(null);
-  const { demo } = graph;
-  const demoBounds = latLngBounds(graph.nodes.map(position));
-  const racksById = new Map(racks?.map((rack) => [rack.id, rack]));
-  const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
-  const racksByNode = new Map(graph.rack_connections.map(({ node_id, rack_id }) => [node_id, rack_id]));
-  const places = [
-    { node: demo.origin_node, label: "Start · USF Bookstore", color: "#127453", side: "left" },
-    { node: demo.parking_node, label: "Library rack", color: "#3456a1", side: "left" },
-    { node: demo.entrance_node, label: "Library entrance", color: "#a54d13", side: "right" },
-  ] as const;
-  const featuredRackIds = new Set(places.map(({ node }) => racksByNode.get(node)));
-  const primary = new Set(demo.primary_segments);
-  const detour = new Set(demo.detour_segments);
-  const walk = new Set(demo.walk_segments);
+  const [destinationId, setDestinationId] = useState("");
+  const [start, setStart] = useState<Coordinate | null>(null);
+  const [selectingStart, setSelectingStart] = useState(false);
+  const [result, setResult] = useState<RouteResult | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const route = result && "route" in result ? result.route : null;
+  const failure = result && "error" in result ? result : null;
 
-  function segmentStyle(id: string) {
-    if (primary.has(id) && detour.has(id)) return pathStyles.shared;
-    if (primary.has(id)) return pathStyles.primary;
-    if (detour.has(id)) return pathStyles.detour;
-    return walk.has(id) ? pathStyles.walk : pathStyles.shared;
+  const destination = graph.destinations.find(({ id }) => id === destinationId);
+  const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const originNode = nodesById.get(graph.demo.origin_node);
+  const entranceNode = destination && nodesById.get(destination.entrance_node);
+  const startPoint = route?.ride.geometry[0] ?? start ?? (originNode && position(originNode));
+  const parkingPoint = route?.walk.geometry[0];
+  const parkingName = graph.rack_connections.find(({ rack_id }) => rack_id === route?.rack_id)?.name ?? "Selected rack";
+  const selectedRack = racks?.find(({ id }) => id === route?.rack_id);
+  const demoBounds = latLngBounds(graph.nodes.map(position));
+
+  useEffect(() => {
+    if (!destinationId) return;
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      controller.abort();
+      setResult({ error: "The route service timed out.", retryable: true });
+    }, 8000);
+
+    async function calculateTrip() {
+      try {
+        const response = await fetch("/api/route", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            destination_id: destinationId,
+            start: start ? { latitude: start[0], longitude: start[1] } : null,
+          }),
+          signal: controller.signal,
+        });
+        if (response.ok) {
+          const trip: TripRoute = await response.json();
+          if (!controller.signal.aborted) setResult({ route: trip });
+        } else if (response.status === 404) {
+          const body: { detail?: unknown } = await response.json();
+          if (!controller.signal.aborted) {
+            setResult({ error: typeof body.detail === "string" ? body.detail : "No route is available." });
+          }
+        } else {
+          throw new Error("The route service returned an unexpected status.");
+        }
+      } catch {
+        if (!controller.signal.aborted) {
+          setResult({ error: "The route service is unavailable.", retryable: true });
+        }
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    }
+
+    void calculateTrip();
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
+  }, [destinationId, start, attempt]);
+
+  useEffect(() => {
+    if (route) {
+      const tripBounds = latLngBounds([...route.ride.geometry, ...route.walk.geometry]);
+      map.current?.fitBounds(tripBounds, boundsOptions);
+    }
+  }, [route]);
+
+  function chooseStart(point: Coordinate | null) {
+    setResult(null);
+    setStart(point);
+    setSelectingStart(false);
   }
 
-  const boundsOptions = { padding: [35, 35] as Coordinate, maxZoom: 18 };
+  const rackMarkers = racks?.map((rack) => ({ id: rack.id, point: position(rack), rack, name: "Parking rack" }))
+    ?? graph.rack_connections.flatMap(({ rack_id, node_id, name }) => {
+      const node = nodesById.get(node_id);
+      return node ? [{ id: rack_id, point: position(node), rack: undefined, name }] : [];
+    });
 
   return (
     <>
-      <div className="map-toolbar">
-        <span>{racks ? `${racks.length} shared parking racks` : "Demo parking racks"}</span>
-        <div className="map-controls" aria-label="Map view">
-          <button type="button" onClick={() => map.current?.fitBounds(demoBounds, boundsOptions)}>
-            Demo area
-          </button>
-          {racks && (
-            <button
-              type="button"
-              onClick={() => map.current?.fitBounds(latLngBounds(racks.map(position)), boundsOptions)}
-            >
-              All racks
+      <div className="planner">
+        <label className="destination-field">
+          <span>Destination</span>
+          <select value={destinationId} onChange={(event) => {
+            setResult(null);
+            setDestinationId(event.target.value);
+          }}>
+            <option value="">Choose a destination</option>
+            {graph.destinations.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+          </select>
+        </label>
+        <div className="planner-start">
+          <span>{start ? "Start on map" : "Start at USF Bookstore"}</span>
+          <div className="map-controls">
+            <button type="button" aria-pressed={selectingStart} onClick={() => setSelectingStart(!selectingStart)}>
+              {selectingStart ? "Cancel picking" : "Pick start on map"}
             </button>
-          )}
+            {start && <button type="button" onClick={() => chooseStart(null)}>Use Bookstore</button>}
+          </div>
         </div>
+        {selectingStart && <p className="planner-hint">Tap near a highlighted cycling path to set your start.</p>}
       </div>
+      <div className="route-status" role="status" aria-live="polite">
+        {route && (
+          <div className="route-summary">
+            <strong>{formatTime(route.ride.duration_seconds + route.walk.duration_seconds)} estimated</strong>
+            <span>Bike to {parkingName} · {formatTime(route.ride.duration_seconds)}</span>
+            <span>Walk to entrance · {formatTime(route.walk.duration_seconds)}</span>
+          </div>
+        )}
+        {route && route.snap_distance_m >= 1 && <p className="map-message">Start snapped to the nearest cycling path.</p>}
+        {destinationId && !result && <p className="map-message">Calculating your trip…</p>}
+        {failure && <p className="map-message route-error">{failure.error}</p>}
+      </div>
+      {failure?.retryable && (
+        <div className="map-controls route-retry">
+          <button type="button" onClick={() => {
+            setResult(null);
+            setAttempt((previous) => previous + 1);
+          }}>Retry route</button>
+        </div>
+      )}
       <MapContainer
         ref={map}
         bounds={demoBounds}
@@ -113,75 +201,72 @@ function LoadedCampusMap({ graph, racks }: { graph: CampusGraph; racks: Rack[] |
           url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
           maxZoom={19}
         />
-        {graph.segments.map((segment) => (
-          <Polyline key={segment.id} positions={segment.geometry} pathOptions={segmentStyle(segment.id)}>
-            <Popup>
-              <strong>{segment.name}</strong>
-              <div>{segment.modes.map((mode) => mode === "walk" ? "Walking" : "Cycling").join(" · ")}</div>
-              {segment.id === demo.closure_segment && <div>Closure demo segment</div>}
-            </Popup>
-          </Polyline>
+        <MapStartPicker onPick={selectingStart ? chooseStart : null} />
+        {selectingStart && graph.segments.filter(({ modes }) => modes.includes("bike")).map(({ id, geometry }) => (
+          <Polyline key={id} positions={geometry} pathOptions={{ color: "#596c64", weight: 4, interactive: false }} />
         ))}
-        {racks?.filter((rack) => !featuredRackIds.has(rack.id)).map((rack) => (
+        {route && route.ride.geometry.length > 1 && <Polyline positions={route.ride.geometry} pathOptions={rideStyle} />}
+        {route && route.walk.geometry.length > 1 && <Polyline positions={route.walk.geometry} pathOptions={walkStyle} />}
+        {rackMarkers.filter(({ id }) => id !== route?.rack_id).map(({ id, point, rack, name }) => (
           <CircleMarker
-            key={rack.id}
-            center={position(rack)}
+            key={id}
+            center={point}
             radius={5}
-              pathOptions={{
-                className: "parking-rack", color: "#fff", weight: 1.5,
-                fillColor: "#3456a1", fillOpacity: 0.9,
-              }}
+            pathOptions={{
+              className: "parking-rack", color: "#fff", weight: 1.5,
+              fillColor: "#3456a1", fillOpacity: 0.9,
+            }}
           >
-            <Popup>
-              <strong>Parking rack</strong>
-              <RackDetails rack={rack} />
-            </Popup>
+            <Popup><strong>{name}</strong><RackDetails rack={rack} /></Popup>
           </CircleMarker>
         ))}
-        {!racks && graph.rack_connections.filter(({ rack_id }) => !featuredRackIds.has(rack_id)).map(({ rack_id, node_id }) => {
-          const node = nodesById.get(node_id);
-          if (!node) return null;
-          return (
-            <CircleMarker key={rack_id} center={position(node)} radius={5} pathOptions={{ color: "#3456a1" }}>
-              <Popup>Demo parking rack</Popup>
-            </CircleMarker>
-          );
-        })}
-        {places.map(({ node, label, color, side }) => {
-          const rackId = racksByNode.get(node);
-          const rack = rackId ? racksById.get(rackId) : undefined;
-          const location = rack ?? nodesById.get(node);
-          if (!location) return null;
-          return (
-            <CircleMarker
-              key={node}
-              center={position(location)}
-              radius={8}
-              pathOptions={{
-                className: rack ? "parking-rack demo-marker" : "demo-marker",
-                color: "#fff", weight: 2, fillColor: color, fillOpacity: 1,
-              }}
-            >
-              <Tooltip permanent direction={side} offset={[side === "left" ? -9 : 9, 0]}>
-                {label}
-              </Tooltip>
-              <Popup>
-                <strong>{label}</strong>
-                {rackId && <RackDetails rack={rack} />}
-              </Popup>
-            </CircleMarker>
-          );
-        })}
+        {startPoint && (
+          <TripMarker point={startPoint} accent="#127453" label="Start" side="left" className="trip-start" />
+        )}
+        {parkingPoint && (
+          <TripMarker point={parkingPoint} accent="#3456a1" label={parkingName} side="left" className="parking-rack trip-parking">
+            <RackDetails rack={selectedRack} />
+          </TripMarker>
+        )}
+        {entranceNode && (
+          <TripMarker point={position(entranceNode)} accent="#a54d13" label="Entrance" side="right" className="trip-entrance" />
+        )}
       </MapContainer>
       <ul className="map-legend" aria-label="Map legend">
-        <li className="legend-primary">Primary approach</li>
-        <li className="legend-detour">Detour</li>
-        <li className="legend-shared">Shared path</li>
-        <li className="legend-walk">Walk to entrance</li>
+        {route && <li className="legend-ride">Bike to rack</li>}
+        {route && <li className="legend-walk">Walk to entrance</li>}
         <li className="legend-rack">Parking rack</li>
       </ul>
+      <div className="map-toolbar">
+        <span>{racks ? racks.length + " shared parking racks" : "Demo parking racks"}</span>
+        <div className="map-controls" role="group" aria-label="Map view">
+          <button type="button" onClick={() => map.current?.fitBounds(demoBounds, boundsOptions)}>Route area</button>
+          {racks && (
+            <button type="button" onClick={() => map.current?.fitBounds(latLngBounds(racks.map(position)), boundsOptions)}>
+              All racks
+            </button>
+          )}
+        </div>
+      </div>
       {!racks && <p role="status" className="map-message">The full USF parking inventory is unavailable. Demo racks are shown.</p>}
     </>
+  );
+}
+
+function TripMarker({ point, accent, label, side, className, children }: {
+  point: Coordinate;
+  accent: string;
+  label: string;
+  side: "left" | "right";
+  className: string;
+  children?: ReactNode;
+}) {
+  const style: PathOptions = { className, color: "#fff", weight: 2, fillColor: accent, fillOpacity: 1 };
+  return (
+    <CircleMarker center={point} radius={6} pathOptions={style}>
+      <Tooltip permanent direction={side} offset={[side === "left" ? -8 : 8, 0]}>{label}</Tooltip>
+      {children && <Popup><strong>{label}</strong>{children}</Popup>}
+    </CircleMarker>
   );
 }
 
