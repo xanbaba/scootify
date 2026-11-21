@@ -2,6 +2,8 @@
 /.npm-cache/
 /frontend/node_modules/
 /frontend/dist/
+/backend/data/usf-tampa-racks.json
+/backend/data/usf-tampa-racks.*.tmp
 __pycache__/
 *.py[cod]
 .env
