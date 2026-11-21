@@ -45,7 +45,7 @@ Run `npm.cmd run build` from `frontend` to type-check and build the frontend. Ru
 
 ## Route preview
 
-The path graph connects adjacent junctions on mapped pedestrian-area boundaries for walking, including the shortcut outside Engineering II.
+The path graph connects walkable path junctions along mapped plaza boundaries. It follows the corners between entrances, so the first walk can take the west side of the Engineering II plaza. These boundary links support walking. Mapped linear paths and walls take precedence over inferred links.
 
 The student view uses the browser’s current location when permission is granted. Search for a building or use **Drop a pin**. Use **Pin start** if location is unavailable or to choose another start. Pins show the selected coordinates. When the start is away from the path network, the first walking leg includes a straight-line estimate to the nearest mapped path. Scootify has no indoor path data.
 

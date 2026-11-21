@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from hashlib import sha256
 from pathlib import Path
 
-from .campus import CampusNode, Destination, NETWORK_FILE, PathSegment, distance_m, load_graph, within_bounds
+from .campus import CampusNode, Coordinate, Destination, NETWORK_FILE, PathSegment, distance_m, load_graph, within_bounds
 
 
 BOUNDS = ((28.0547, -82.4260), (28.0692, -82.4019))
@@ -15,6 +15,8 @@ PATH_TYPES = {
 }
 RESTRICTED = {"no", "private", "customers", "permit", "delivery", "agricultural", "forestry"}
 PUBLIC_ACCESS = {"yes", "designated", "permissive", "official"}
+WALL_BARRIERS = {"wall", "retaining_wall", "city_wall", "fence", "hedge", "guard_rail"}
+FootArea = tuple[ET.Element, dict[str, str], list[str]]
 
 
 def tags(element: ET.Element) -> dict[str, str]:
@@ -45,39 +47,45 @@ def modes_for(attributes: dict[str, str], *, allow_area: bool = False) -> list[s
 
 
 def add_pedestrian_area_links(
-    ways: list[tuple[ET.Element, dict[str, str], list[str]]],
-    points: dict[str, tuple[float, float]],
+    areas: list[FootArea],
+    points: dict[str, Coordinate],
     segments: list[PathSegment],
+    occupied_edges: set[frozenset[str]],
 ) -> None:
-    walking_nodes = set()
-    existing_links = set()
-    for segment in segments:
-        if "walk" in segment.modes:
-            walking_nodes.update((segment.from_node, segment.to_node))
-            existing_links.add(frozenset((segment.from_node, segment.to_node)))
-
-    for way, attrs, refs in ways:
-        if attrs.get("area") != "yes" or attrs.get("highway") != "pedestrian":
+    walking_nodes = {
+        node for segment in segments if "walk" in segment.modes
+        for node in (segment.from_node, segment.to_node)
+    }
+    for way, attrs, refs in areas:
+        ring = refs[:-1]
+        junctions = [index for index, node in enumerate(ring) if node in walking_nodes]
+        if len(junctions) < 2:
             continue
-        if len(refs) < 4 or refs[0] != refs[-1] or "walk" not in modes_for(attrs, allow_area=True):
-            continue
-        for start, end in zip(refs, refs[1:]):
-            if start == end or start not in walking_nodes or end not in walking_nodes:
+        perimeter = ring + ring
+        ends = junctions[1:] + [junctions[0] + len(ring)]
+        for begin, end in zip(junctions, ends):
+            ids = perimeter[begin:end + 1]
+            start, finish = ids[0], ids[-1]
+            if start == finish:
                 continue
-            link = frozenset((start, end))
-            if link in existing_links:
+            edges = {frozenset((a, b)) for a, b in zip(ids, ids[1:])}
+            if edges & occupied_edges:
                 continue
-            geometry = [points[start], points[end]]
-            length = round(distance_m(*geometry), 3)
+            geometry = [points[node] for node in ids]
+            length = round(sum(distance_m(a, b) for a, b in zip(geometry, geometry[1:])), 3)
             if length == 0:
                 continue
-            low, high = sorted((start, end))
+            low, high = sorted((start, finish))
+            segment_id = f"osm-area-{way.attrib['id']}-{low}-{high}"
+            if len(ids) > 2:
+                # Two perimeter arcs can connect the same pair of junctions.
+                ordered = ids if start == low else ids[::-1]
+                segment_id += "-" + sha256("/".join(ordered).encode()).hexdigest()[:10]
             segments.append(PathSegment(
-                id=f"osm-area-{way.attrib['id']}-{low}-{high}",
-                name=attrs.get("name", "Pedestrian area"),
-                from_node=start, to_node=end, geometry=geometry, length_m=length, modes=["walk"],
+                id=segment_id, name=attrs.get("name", "Pedestrian area"),
+                from_node=start, to_node=finish, geometry=geometry, length_m=length, modes=["walk"],
             ))
-            existing_links.add(link)
+            occupied_edges.update(edges)
 
 
 def main_component(segments: list[PathSegment], mode: str) -> set[str]:
@@ -117,12 +125,25 @@ def build_network(source: Path) -> None:
         and attributes.get("access") not in RESTRICTED
     }
     ways = [(way, tags(way), node_refs(way)) for way in osm.findall("way")]
+    pedestrian_areas = [
+        (way, attrs, refs) for way, attrs, refs in ways
+        if attrs.get("area") == "yes" and attrs.get("highway") in {"pedestrian", "footway"}
+        and len(refs) >= 4 and refs[0] == refs[-1] and all(node in points for node in refs)
+        and "walk" in modes_for(attrs, allow_area=True)
+    ]
+    # A mapped linear path or wall takes precedence over an inferred perimeter link.
+    occupied_edges = {
+        frozenset((a, b)) for _, attrs, refs in ways
+        if ("highway" in attrs and attrs.get("area") != "yes") or attrs.get("barrier") in WALL_BARRIERS
+        for a, b in zip(refs, refs[1:])
+    }
     path_ways = [(way, attrs, refs, modes) for way, attrs, refs in ways if (modes := modes_for(attrs))]
     demo = load_graph()
     junction_counts = Counter(node for _, _, refs, _ in path_ways for node in refs)
     split_nodes = {node for node, count in junction_counts.items() if count > 1}
     split_nodes.update(entrances)
     split_nodes.update(node.id for node in demo.nodes)
+    split_nodes.update(node for _, _, refs in pedestrian_areas for node in refs)
 
     segments = []
     segment_ids: set[str] = set()
@@ -164,7 +185,7 @@ def build_network(source: Path) -> None:
                 modes=modes, one_way=bike_direction in {"yes", "1", "true", "-1"}, walk_direction=direction,
             ))
 
-    add_pedestrian_area_links(ways, points, segments)
+    add_pedestrian_area_links(pedestrian_areas, points, segments, occupied_edges)
     components = {mode: main_component(segments, mode) for mode in ("bike", "walk")}
     connected = []
     for segment in segments:

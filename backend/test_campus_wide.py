@@ -38,6 +38,15 @@ class CampusWideRoutingTests(TestCase):
         self.assertEqual(plaza_link.modes, ["walk"])
         self.assertLess(plaza_link.length_m, 4)
 
+    def test_engineering_west_plaza_link_preserves_mapped_corners(self) -> None:
+        west_link = next(
+            segment for segment in self.graph.segments
+            if segment.id.startswith("osm-area-43247700-542782121-542782127-")
+        )
+        self.assertEqual(west_link.modes, ["walk"])
+        self.assertEqual(len(west_link.geometry), 4)
+        self.assertAlmostEqual(west_link.length_m, 17.85, places=1)
+
     def test_off_campus_destination_is_rejected(self) -> None:
         with self.assertRaisesRegex(RouteUnavailable, "destination is outside"):
             plan_route(self.graph, RouteRequest(destination=MapPoint(latitude=28.075, longitude=-82.41)))
