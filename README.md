@@ -62,7 +62,7 @@ The planner checks which riding paths the student can reach on foot, then uses t
 
 Tap **Report** on the student map. The form suggests a GPS pin and lets the rider move it by tapping the map. It highlights the selected path before posting. The description supports phone keyboard dictation and suggests a category from common phrases. The rider can select a category directly.
 
-Fast mode minimizes travel time. Safer adds a 60-second routing cost to each traversal of a segment with an active report. The ETA uses physical travel time in both modes. During GPS navigation, an on-route hazard ahead appears in a dismissible banner. After the GPS check detects a pass, **Still there** and **Looks clear** stay available for up to 25 seconds.
+Fast mode minimizes travel time. Safer adds a 60-second routing cost to each traversal of a segment with an active report. The ETA uses physical travel time in both modes. During GPS navigation, an on-route hazard ahead appears in a dismissible banner. After the GPS check detects a pass, **Still there** and **Looks clear** stay available for up to 25 seconds. If you report a hazard during a trip, Scootify skips both prompts for that report until you start a new trip.
 
 SQLite stores reports, rider observations, and path closures at `backend/data/scootify.sqlite3`. Set `SCOOTIFY_DB_PATH` before running the API to use a separate database. The demo counts one current observation per report and browser. Staff can move a report from Open to In progress to Resolved. Resolving it clears the warning and cost. Staff can close and reopen its path independently.
 

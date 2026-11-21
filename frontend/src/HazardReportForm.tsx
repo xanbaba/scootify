@@ -8,7 +8,7 @@ type Props = {
   locationMessage: string;
   onSelectPath: (path: ReportPath | null) => void;
   onClose: () => void;
-  onPosted: () => void;
+  onPosted: (reportId: string) => void;
 };
 
 function suggestCategory(description: string): Category | null {
@@ -58,7 +58,7 @@ export function HazardReportForm({ point, locationMessage, onSelectPath, onClose
     setPosting(true);
     setPostError("");
     try {
-      await reportRequest<Report>("/api/reports", {
+      const report = await reportRequest<Report>("/api/reports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -66,7 +66,7 @@ export function HazardReportForm({ point, locationMessage, onSelectPath, onClose
           point: { latitude: point[0], longitude: point[1] },
         }),
       });
-      onPosted();
+      onPosted(report.id);
     } catch (error) {
       setPostError(error instanceof Error ? error.message : "Could not post the hazard.");
       setPosting(false);

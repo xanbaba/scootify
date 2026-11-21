@@ -57,6 +57,7 @@ type TripSession = {
   navigating: boolean;
   parkedRackId: string | null;
   riding: boolean;
+  reportedHazardIds?: string[];
 };
 
 const rideStyle = { color: "#08755c", weight: 7 };
@@ -160,6 +161,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   const [routeMode, setRouteMode] = useState<RouteMode>(savedTrip?.routeMode ?? "fast");
   const [attempt, setAttempt] = useState(0);
   const [navigation, setNavigation] = useState<number | null>(savedTrip?.navigating ? 1 : null);
+  const [reportedHazardIds, setReportedHazardIds] = useState<string[]>(savedTrip?.navigating ? savedTrip.reportedHazardIds ?? [] : []);
   const [updatingRoute, setUpdatingRoute] = useState(false);
   const [perspectiveReady, setPerspectiveReady] = useState(false);
   const [perspectiveUnavailable, setPerspectiveUnavailable] = useState(false);
@@ -172,6 +174,10 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   const [reportLocationMessage, setReportLocationMessage] = useState("");
   const [reportPosted, setReportPosted] = useState(false);
   const { reports, closures, refresh: refreshReports } = useReports();
+  const navigationReports = useMemo(
+    () => reports.filter(({ id }) => !reportedHazardIds.includes(id)),
+    [reportedHazardIds, reports],
+  );
   const tracking = useLiveLocation(navigation);
   const liveFix = tracking?.fix;
   const closedSegments = new Set(closures.map(({ segment_id }) => segment_id));
@@ -255,9 +261,9 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   }, [liveFix, liveOnCampus, tracking?.error]);
 
   useEffect(() => {
-    const saved: TripSession = { start, destination, routeMode, navigating: isNavigating, parkedRackId, riding };
+    const saved: TripSession = { start, destination, routeMode, navigating: isNavigating, parkedRackId, riding, reportedHazardIds };
     try { sessionStorage.setItem(tripSessionKey, JSON.stringify(saved)); } catch { /* Storage is optional. */ }
-  }, [destination, isNavigating, parkedRackId, riding, routeMode, start]);
+  }, [destination, isNavigating, parkedRackId, reportedHazardIds, riding, routeMode, start]);
 
   const routingKey = reports.map(({ id }) => id).join(",") + "|" + [...closedSegments].sort().join(",");
   useEffect(() => {
@@ -488,6 +494,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
     requestCompassAccess();
     setPerspectiveUnavailable(false);
     setNavigation(++navigationSequence.current);
+    setReportedHazardIds([]);
     setFollowing(true);
     setRiding(false);
     setParkedRackId(null);
@@ -495,6 +502,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
 
   function endNavigation() {
     setNavigation(null);
+    setReportedHazardIds([]);
     setParkedRackId(null);
     setRiding(false);
     setResult(null);
@@ -623,7 +631,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
       {isNavigating && (
         <HazardNotice key={navigation} leg={route?.[activeLeg] ?? undefined}
           liveFix={liveOnCampus && !tracking?.error ? liveFix : undefined}
-          reports={reports} hidden={reporting} onVoted={refreshReports} />
+          reports={navigationReports} hidden={reporting} onVoted={refreshReports} />
       )}
       {reportPosted && <div className="report-toast" role="status">Hazard posted</div>}
 
@@ -651,7 +659,8 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
       <section className="navigator-sheet" ref={sheet} aria-label="Campus trip">
         {reporting ? (
           <HazardReportForm point={reportPin} locationMessage={reportLocationMessage}
-            onSelectPath={setReportPath} onClose={closeReport} onPosted={() => {
+            onSelectPath={setReportPath} onClose={closeReport} onPosted={(reportId) => {
+              if (isNavigating) setReportedHazardIds((previous) => [...previous, reportId]);
               closeReport();
               refreshReports();
               setReportPosted(true);
