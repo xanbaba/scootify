@@ -4,6 +4,7 @@
 /frontend/dist/
 /backend/data/usf-tampa-racks.json
 /backend/data/usf-tampa-racks.*.tmp
+/backend/data/scootify.sqlite3*
 __pycache__/
 *.py[cod]
 .env
