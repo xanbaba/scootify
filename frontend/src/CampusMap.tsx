@@ -1,17 +1,29 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import {
   ArrowLeft, ArrowRight, ArrowUpRight, Bike, ChevronDown, CircleParking, Compass,
   Crosshair, Footprints, LocateFixed, MapPin, Minus, Navigation, Plus, Route, X,
 } from "lucide-react";
 import { latLngBounds, type Map as LeafletMap, type PathOptions } from "leaflet";
 import { Circle, CircleMarker, MapContainer, Polyline, Popup, Rectangle, TileLayer, Tooltip, useMapEvents } from "react-leaflet";
+import type { Map as PerspectiveMap } from "maplibre-gl";
 import { DestinationSearch, placeName, type CampusPlace } from "./DestinationSearch";
+import type { PerspectiveProps } from "./NavigationPerspective";
 import { useLiveLocation } from "./useLiveLocation";
+import { requestCompassAccess, routeHeading, type Coordinate } from "./navigationHeading";
 import "@fontsource-variable/manrope";
 import "leaflet/dist/leaflet.css";
 import "./navigator.css";
 
-type Coordinate = [number, number];
+function UnavailablePerspective({ onUnavailable }: { onUnavailable: () => void }) {
+  useEffect(onUnavailable, [onUnavailable]);
+  return null;
+}
+
+const NavigationPerspective = lazy<ComponentType<PerspectiveProps>>(
+  () => import("./NavigationPerspective").catch(() => ({ default: UnavailablePerspective })),
+);
+const noRacks: Coordinate[] = [];
+
 type Location = { latitude: number; longitude: number };
 type Rack = Location & { id: string; condition: string | null; loops: number | null };
 type CampusData = {
@@ -33,10 +45,10 @@ type TripRoute = {
 };
 type RouteResult = { route: TripRoute } | { error: string; retryable?: boolean };
 
-const rideStyle = { className: "trip-ride", color: "#08755c", weight: 7, interactive: false };
-const walkStyle = { className: "trip-walk", color: "#b45921", weight: 6, dashArray: "3 8", interactive: false };
-const routeOutline = { color: "#ffffff", weight: 11, opacity: 0.94, interactive: false };
-const rackStyle = { className: "parking-rack", color: "#fff", weight: 1.4, fillColor: "#276954", fillOpacity: 0.9 };
+const rideStyle = { color: "#08755c", weight: 7 };
+const walkStyle = { color: "#b45921", weight: 6, dashArray: "3 8" };
+const routeOutline = { color: "#ffffff", weight: 11, opacity: 0.94 };
+const rackStyle = { color: "#fff", weight: 1.4, fillColor: "#276954", fillOpacity: 0.9 };
 
 function requestPoint(point: Coordinate): Location {
   return { latitude: point[0], longitude: point[1] };
@@ -100,6 +112,7 @@ function IconButton({ label, onClick, children, pressed }: {
 
 function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] | null }) {
   const map = useRef<LeafletMap | null>(null);
+  const perspective = useRef<PerspectiveMap | null>(null);
   const sheet = useRef<HTMLElement | null>(null);
   const locationRequest = useRef(0);
   const navigationSequence = useRef(0);
@@ -116,6 +129,8 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   const [result, setResult] = useState<RouteResult | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [navigation, setNavigation] = useState<number | null>(null);
+  const [perspectiveReady, setPerspectiveReady] = useState(false);
+  const [perspectiveUnavailable, setPerspectiveUnavailable] = useState(false);
   const [following, setFollowing] = useState(true);
   const [walking, setWalking] = useState(false);
   const tracking = useLiveLocation(navigation);
@@ -134,6 +149,10 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   const campusBounds = latLngBounds(campus.bounds);
   const liveOnCampus = liveFix && campusBounds.contains(liveFix.point);
   const isNavigating = navigation !== null;
+  const usePerspective = isNavigating && perspectiveReady && !perspectiveUnavailable;
+  const guidancePosition = liveOnCampus ? liveFix.point : start?.point;
+  const guidanceHeading = (liveOnCampus ? liveFix.heading : null)
+    ?? routeHeading((walking ? route?.walk.geometry : route?.ride.geometry) ?? []);
   const offPathPins = route && (route.snap_distance_m >= 8 || route.destination_snap_distance_m >= 8);
 
   useEffect(() => {
@@ -243,8 +262,33 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   }, []);
 
   const fitCampus = useCallback(() => {
-    map.current?.fitBounds(latLngBounds(campus.bounds), { ...viewportPadding(), maxZoom: 17, animate: false });
+    const padding = viewportPadding();
+    if (perspective.current) {
+      const [[south, west], [north, east]] = campus.bounds;
+      const [left, top] = padding.paddingTopLeft;
+      const [right, bottom] = padding.paddingBottomRight;
+      perspective.current.jumpTo({ pitch: 0, bearing: 0, padding: { left: 0, right: 0, top: 0, bottom: 0 } });
+      perspective.current.fitBounds([[west, south], [east, north]], { padding: { left, right, top, bottom }, maxZoom: 17, duration: 250 });
+    } else {
+      map.current?.fitBounds(latLngBounds(campus.bounds), { ...padding, maxZoom: 17, animate: false });
+    }
   }, [campus.bounds, viewportPadding]);
+
+  const navigationPadding = useCallback(() => {
+    const { paddingTopLeft: [left, top], paddingBottomRight: [right, flatBottom] } = viewportPadding();
+    const height = map.current?.getSize().y ?? window.innerHeight;
+    const mobile = window.matchMedia("(max-width: 720px)").matches;
+    const bottom = mobile ? Math.min(sheetHeight + 42, height * 0.68) : flatBottom;
+    return { left, right, bottom, top: top + Math.max(0, height - top - bottom) * 0.46 };
+  }, [sheetHeight, viewportPadding]);
+
+  const attachPerspective = useCallback((instance: PerspectiveMap | null) => {
+    perspective.current = instance;
+    setPerspectiveReady(instance !== null);
+  }, []);
+
+  const pauseFollowing = useCallback(() => setFollowing(false), []);
+  const fallBackToFlat = useCallback(() => setPerspectiveUnavailable(true), []);
 
   const attachMap = useCallback((instance: LeafletMap | null) => {
     map.current = instance;
@@ -277,8 +321,8 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   }, [viewportPadding]);
 
   useEffect(() => {
-    if (isNavigating && liveFix && liveOnCampus && following) centerOn(liveFix.point);
-  }, [centerOn, following, isNavigating, liveFix, liveOnCampus]);
+    if (isNavigating && !usePerspective && liveFix && liveOnCampus && following) centerOn(liveFix.point);
+  }, [centerOn, following, isNavigating, liveFix, liveOnCampus, usePerspective]);
 
   function chooseStart(point: Coordinate, source: StartSelection["source"]) {
     locationRequest.current += 1;
@@ -317,6 +361,8 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   }
 
   function beginNavigation() {
+    requestCompassAccess();
+    setPerspectiveUnavailable(false);
     setNavigation(++navigationSequence.current);
     setFollowing(true);
     setWalking(false);
@@ -330,7 +376,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   function recenter() {
     if (isNavigating) {
       setFollowing(true);
-      if (liveFix && liveOnCampus) centerOn(liveFix.point);
+      if (liveFix && liveOnCampus && !usePerspective) centerOn(liveFix.point);
       else if (tracking?.error) setNavigation(++navigationSequence.current);
     } else if (start?.source === "gps") {
       centerOn(start.point);
@@ -342,6 +388,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   const rackMarkers = useMemo(() => racks?.map((rack) => ({
     id: rack.id, point: [rack.latitude, rack.longitude] as Coordinate, rack, name: "Parking rack",
   })) ?? campus.routable_racks.map(({ id, point, name }) => ({ id, point, rack: undefined, name })), [campus.routable_racks, racks]);
+  const rackPoints = useMemo(() => showRacks ? rackMarkers.map(({ point }) => point) : noRacks, [rackMarkers, showRacks]);
   const liveMessage = tracking?.error
     ?? (liveFix && !liveOnCampus ? "Live location is outside the campus map."
       : liveFix ? "Live location" : "Waiting for GPS…");
@@ -351,6 +398,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
     <main
       className="navigator"
       data-picking={picking ?? undefined}
+      data-perspective={usePerspective ? "true" : undefined}
       style={{ "--sheet-height": sheetHeight + "px" } as CSSProperties}
     >
       <MapContainer
@@ -365,18 +413,18 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
           url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
           maxZoom={19}
         />
-        <MapInteraction onPick={picking ? onMapPoint : null} onDrag={() => setFollowing(false)} />
-        {picking && <Rectangle bounds={campusBounds} pathOptions={{ color: "#164f3e", weight: 2, dashArray: "6 6", fillOpacity: 0.035, interactive: false }} />}
+        <MapInteraction onPick={picking ? onMapPoint : null} onDrag={pauseFollowing} />
+        {picking && <Rectangle bounds={campusBounds} interactive={false} pathOptions={{ color: "#164f3e", weight: 2, dashArray: "6 6", fillOpacity: 0.035 }} />}
         {route && route.ride.geometry.length > 1 && (
           <>
-            <Polyline positions={route.ride.geometry} pathOptions={routeOutline} />
-            <Polyline positions={route.ride.geometry} pathOptions={rideStyle} />
+            <Polyline positions={route.ride.geometry} pathOptions={routeOutline} interactive={false} />
+            <Polyline positions={route.ride.geometry} pathOptions={rideStyle} className="trip-ride" interactive={false} />
           </>
         )}
         {route && route.walk.geometry.length > 1 && (
           <>
-            <Polyline positions={route.walk.geometry} pathOptions={{ ...routeOutline, weight: 8 }} />
-            <Polyline positions={route.walk.geometry} pathOptions={walkStyle} />
+            <Polyline positions={route.walk.geometry} pathOptions={{ ...routeOutline, weight: 8 }} interactive={false} />
+            <Polyline positions={route.walk.geometry} pathOptions={walkStyle} className="trip-walk" interactive={false} />
           </>
         )}
         {showRacks && rackMarkers.filter(({ id }) => id !== route?.rack_id).map(({ id, point, rack, name }) => (
@@ -384,6 +432,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
             key={id}
             center={point}
             radius={3.5}
+            className="parking-rack"
             pathOptions={rackStyle}
           >
             <Popup><strong>{name}</strong><RackDetails rack={rack} /></Popup>
@@ -402,11 +451,21 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
         )}
         {isNavigating && liveFix && liveOnCampus && (
           <>
-            <Circle center={liveFix.point} radius={liveFix.accuracy} pathOptions={{ color: "#156eca", weight: 1, opacity: 0.25, fillOpacity: 0.14, interactive: false }} />
+            <Circle center={liveFix.point} radius={liveFix.accuracy} interactive={false} pathOptions={{ color: "#156eca", weight: 1, opacity: 0.25, fillOpacity: 0.14 }} />
             <TripMarker point={liveFix.point} accent="#156eca" label="You" side="left" className="live-position" />
           </>
         )}
       </MapContainer>
+      {navigation !== null && guidancePosition && !perspectiveUnavailable && (
+        <Suspense fallback={null}>
+          <NavigationPerspective
+            session={navigation}
+            position={guidancePosition} heading={guidanceHeading} live={Boolean(liveOnCampus)}
+            route={route} destination={destinationPoint} racks={rackPoints} following={following}
+            padding={navigationPadding} onMap={attachPerspective} onExplore={pauseFollowing} onUnavailable={fallBackToFlat}
+          />
+        </Suspense>
+      )}
       <NavigatorHeader />
 
       <div className="navigator-map-actions" role="group" aria-label="Map controls">
@@ -415,8 +474,14 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
           <CircleParking aria-hidden="true" size={21} />
         </IconButton>
         <div className="navigator-zoom">
-          <IconButton label="Zoom in" onClick={() => map.current?.zoomIn()}><Plus aria-hidden="true" size={19} /></IconButton>
-          <IconButton label="Zoom out" onClick={() => map.current?.zoomOut()}><Minus aria-hidden="true" size={19} /></IconButton>
+          <IconButton label="Zoom in" onClick={() => {
+            if (!perspective.current) map.current?.zoomIn();
+            else { pauseFollowing(); perspective.current.zoomIn(); }
+          }}><Plus aria-hidden="true" size={19} /></IconButton>
+          <IconButton label="Zoom out" onClick={() => {
+            if (!perspective.current) map.current?.zoomOut();
+            else { pauseFollowing(); perspective.current.zoomOut(); }
+          }}><Minus aria-hidden="true" size={19} /></IconButton>
         </div>
         <IconButton label={isNavigating ? "Follow my location" : "Center on my location"} onClick={recenter} pressed={isNavigating ? following : undefined}>
           <LocateFixed aria-hidden="true" size={21} />
@@ -447,6 +512,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
               </div>
             )}
             {!route && <p className="sheet-note" role="status">{failure?.error ?? "Updating your route…"}</p>}
+            {perspectiveUnavailable && <p className="sheet-note" role="status">Tilted view is unavailable. GPS can still follow your location on the overhead map.</p>}
             {tracking?.error && <button className="sheet-secondary gps-retry" type="button" onClick={() => setNavigation(++navigationSequence.current)}>Retry GPS</button>}
           </>
         ) : (
@@ -510,9 +576,9 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
 function TripMarker({ point, accent, label, side, className, children }: {
   point: Coordinate; accent: string; label: string; side: "left" | "right"; className: string; children?: ReactNode;
 }) {
-  const style: PathOptions = { className, color: "#fff", weight: 2.5, fillColor: accent, fillOpacity: 1 };
+  const style: PathOptions = { color: "#fff", weight: 2.5, fillColor: accent, fillOpacity: 1 };
   return (
-    <CircleMarker center={point} radius={7} pathOptions={style}>
+    <CircleMarker center={point} radius={7} className={className} pathOptions={style}>
       <Tooltip permanent direction={side} offset={[side === "left" ? -9 : 9, 0]}>{label}</Tooltip>
       {children && <Popup><strong>{label}</strong>{children}</Popup>}
     </CircleMarker>

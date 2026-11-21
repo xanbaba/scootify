@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
+import { distanceBetween, headingBetween, normalizeHeading, type Coordinate } from "./navigationHeading";
 
-export type LiveFix = { point: [number, number]; accuracy: number };
+export type LiveFix = { point: Coordinate; accuracy: number; heading: number | null };
 
 type LocationReading = {
   session: number;
@@ -22,6 +23,8 @@ export function useLiveLocation(session: number | null) {
 
     let watch: number | null = null;
     let generation = 0;
+    let courseAnchor: Coordinate | null = null;
+    let movementHeading: number | null = null;
 
     function stopWatching() {
       generation += 1;
@@ -40,7 +43,17 @@ export function useLiveLocation(session: number | null) {
       watch = geolocation.watchPosition(
         ({ coords }) => {
           if (current !== generation) return;
-          setReading({ session: activeSession, fix: { point: [coords.latitude, coords.longitude], accuracy: coords.accuracy } });
+          const point: Coordinate = [coords.latitude, coords.longitude];
+          if (coords.accuracy <= 40) {
+            if (courseAnchor === null) courseAnchor = point;
+            else if (distanceBetween(courseAnchor, point) >= Math.max(8, coords.accuracy)) {
+              movementHeading = headingBetween(courseAnchor, point);
+              courseAnchor = point;
+            }
+          }
+          const heading = coords.heading !== null && Number.isFinite(coords.heading)
+            ? normalizeHeading(coords.heading) : movementHeading;
+          setReading({ session: activeSession, fix: { point, accuracy: coords.accuracy, heading } });
         },
         (error) => {
           if (current !== generation) return;
