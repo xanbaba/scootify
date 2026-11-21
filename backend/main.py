@@ -8,7 +8,10 @@ from pydantic import BaseModel, ValidationError
 from .campus import CampusGraph, load_graph, within_bounds
 from .campus_wide import CampusMapData, load_route_graph, make_map_data
 from .parking import ParkingRack, load_racks
-from .reports import DB_PATH, REPORT_PATH_RADIUS_M, Report, ReportDraft, ReportPath, ReportStore, ReportVote
+from .reports import (
+    DB_PATH, REPORT_PATH_RADIUS_M, ClosedPath, ClosureChange, Report, ReportDraft,
+    ReportPath, ReportStore, ReportVote, RoutingState,
+)
 from .routing import MapPoint, RouteRequest, RouteUnavailable, TripRoute, path_projections, plan_route
 
 
@@ -48,9 +51,12 @@ def get_campus_map() -> CampusMapData:
 
 @app.post("/api/route")
 def get_route(request: RouteRequest) -> TripRoute:
-    active_reports = reports.list_reports()
+    active_reports, closures = reports.routing_state()
     try:
-        trip = plan_route(route_graph, request, {report.segment_id for report in active_reports})
+        trip = plan_route(
+            route_graph, request, {report.segment_id for report in active_reports},
+            closed_segments={closure.segment_id for closure in closures},
+        )
     except RouteUnavailable as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     route_segments = {segment_id for leg in (trip.approach, trip.ride, trip.walk) if leg for segment_id in leg.segment_ids}
@@ -102,6 +108,43 @@ def vote_on_report(report_id: UUID, vote: ReportVote) -> Report:
 @app.get("/api/admin/reports")
 def get_admin_reports() -> list[Report]:
     return reports.list_reports(include_resolved=True)
+
+
+def read_routing_state(*, staff: bool = False) -> RoutingState:
+    visible_reports, closures = reports.routing_state(include_resolved=staff)
+    return RoutingState(
+        reports=visible_reports,
+        closures=[
+            ClosedPath(**item.model_dump(), name=segment.name, geometry=segment.geometry)
+            for item in closures if (segment := reportable_segments.get(item.segment_id)) is not None
+        ],
+    )
+
+
+@app.get("/api/routing-state")
+def get_routing_state() -> RoutingState:
+    return read_routing_state()
+
+
+@app.get("/api/admin/routing-state")
+def get_staff_routing_state() -> RoutingState:
+    return read_routing_state(staff=True)
+
+
+@app.put("/api/admin/segments/{segment_id}/closure")
+def set_segment_closure(segment_id: str, change: ClosureChange) -> ClosureChange:
+    if segment_id not in reportable_segments:
+        raise HTTPException(status_code=404, detail="This path segment is no longer on the campus map.")
+    reports.set_closure(segment_id, closed=change.closed)
+    return change
+
+
+@app.put("/api/admin/reports/{report_id}/work")
+def start_report_work(report_id: UUID) -> Report:
+    report = reports.start_work(report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="This report does not exist.")
+    return report
 
 
 @app.put("/api/admin/reports/{report_id}/resolution")

@@ -36,10 +36,17 @@ CREATE TABLE IF NOT EXISTS report_votes (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (report_id, rider_id)
 );
+CREATE TABLE IF NOT EXISTS segment_closures (
+    segment_id TEXT PRIMARY KEY,
+    closed_at TEXT NOT NULL
+);
 """
 
 REPORT_QUERY = """
 SELECT reports.*,
+       CASE WHEN reports.resolved_at IS NOT NULL THEN 'resolved'
+            WHEN reports.in_progress_at IS NOT NULL THEN 'in_progress'
+            ELSE 'open' END AS status,
        COUNT(CASE WHEN votes.vote = 'still_there' THEN 1 END) AS still_there,
        COUNT(CASE WHEN votes.vote = 'looks_clear' THEN 1 END) AS looks_clear,
        MAX(CASE WHEN votes.vote = 'still_there' THEN votes.updated_at END) AS last_confirmed_at
@@ -77,6 +84,7 @@ class Report(BaseModel):
     latitude: float
     longitude: float
     created_at: datetime
+    status: Literal["open", "in_progress", "resolved"]
     resolved_at: datetime | None
     still_there: int
     looks_clear: int
@@ -86,6 +94,25 @@ class Report(BaseModel):
 class ReportVote(BaseModel):
     rider_id: UUID
     vote: Vote
+
+
+class SegmentClosure(BaseModel):
+    segment_id: str
+    closed_at: datetime
+
+
+class ClosedPath(SegmentClosure):
+    name: str
+    geometry: list[Coordinate]
+
+
+class RoutingState(BaseModel):
+    reports: list[Report]
+    closures: list[ClosedPath]
+
+
+class ClosureChange(BaseModel):
+    closed: bool
 
 
 def timestamp() -> str:
@@ -108,17 +135,31 @@ class ReportStore:
         with self.connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(SCHEMA)
+            connection.execute("BEGIN IMMEDIATE")
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(reports)")}
+            if "in_progress_at" not in columns:
+                connection.execute("ALTER TABLE reports ADD COLUMN in_progress_at TEXT")
 
     def list_reports(self, *, include_resolved: bool = False) -> list[Report]:
-        where = "" if include_resolved else "WHERE reports.resolved_at IS NULL"
         with self.connect() as connection:
-            rows = connection.execute(f"""
-                {REPORT_QUERY}
-                {where}
-                GROUP BY reports.id
-                ORDER BY reports.created_at DESC, reports.id
-            """)
-            return [Report.model_validate(dict(row)) for row in rows]
+            return self.read_reports(connection, include_resolved=include_resolved)
+
+    def read_reports(self, connection: sqlite3.Connection, *, include_resolved: bool) -> list[Report]:
+        where = "" if include_resolved else "WHERE reports.resolved_at IS NULL"
+        rows = connection.execute(f"""
+            {REPORT_QUERY}
+            {where}
+            GROUP BY reports.id
+            ORDER BY reports.created_at DESC, reports.id
+        """)
+        return [Report.model_validate(dict(row)) for row in rows]
+
+    def routing_state(self, *, include_resolved: bool = False) -> tuple[list[Report], list[SegmentClosure]]:
+        with self.connect() as connection:
+            connection.execute("BEGIN")
+            reports = self.read_reports(connection, include_resolved=include_resolved)
+            rows = connection.execute("SELECT segment_id, closed_at FROM segment_closures ORDER BY segment_id")
+            return reports, [SegmentClosure.model_validate(dict(row)) for row in rows]
 
     def get(self, connection: sqlite3.Connection, report_id: UUID) -> Report | None:
         row = connection.execute(f"""
@@ -156,3 +197,21 @@ class ReportStore:
                 UPDATE reports SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL
             """, (timestamp(), str(report_id)))
             return self.get(connection, report_id)
+
+    def start_work(self, report_id: UUID) -> Report | None:
+        with self.connect() as connection:
+            connection.execute("""
+                UPDATE reports SET in_progress_at = ?
+                WHERE id = ? AND in_progress_at IS NULL AND resolved_at IS NULL
+            """, (timestamp(), str(report_id)))
+            return self.get(connection, report_id)
+
+    def set_closure(self, segment_id: str, *, closed: bool) -> None:
+        with self.connect() as connection:
+            if closed:
+                connection.execute("""
+                    INSERT INTO segment_closures (segment_id, closed_at) VALUES (?, ?)
+                    ON CONFLICT(segment_id) DO NOTHING
+                """, (segment_id, timestamp()))
+            else:
+                connection.execute("DELETE FROM segment_closures WHERE segment_id = ?", (segment_id,))

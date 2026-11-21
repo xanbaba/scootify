@@ -7,8 +7,8 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from . import main
-from .reports import ReportDraft, ReportStore, ReportVote
-from .routing import BIKE_SPEED_MPS, MapPoint, RouteRequest, plan_route
+from .reports import ClosureChange, ReportDraft, ReportStore, ReportVote
+from .routing import BIKE_SPEED_MPS, MapPoint, RouteRequest, RouteUnavailable, plan_route
 
 
 class HazardReportTests(TestCase):
@@ -75,3 +75,62 @@ class HazardReportTests(TestCase):
             ))
         self.assertEqual(error.exception.status_code, 422)
         self.assertEqual(main.get_reports(), [])
+
+    def test_report_status_and_closure_can_change_independently(self) -> None:
+        report = self.create_report()
+        fast_request = RouteRequest(destination_id="tampa-library")
+        safer_request = RouteRequest(destination_id="tampa-library", mode="safer")
+        baseline = main.get_route(fast_request)
+        self.assertEqual(report.status, "open")
+        self.assertEqual(main.start_report_work(report.id).status, "in_progress")
+        self.assertEqual(main.get_routing_state().closures, [])
+        self.assertEqual(main.get_route(fast_request).warning_ids, [report.id])
+        main.set_segment_closure(self.segment_id, ClosureChange(closed=True))
+        main.set_segment_closure(self.segment_id, ClosureChange(closed=True))
+
+        reopened_store = ReportStore(self.path)
+        reopened_store.initialize()
+        reports, closures = reopened_store.routing_state()
+        self.assertEqual(reports[0].status, "in_progress")
+        self.assertEqual([closure.segment_id for closure in closures], [self.segment_id])
+        for request in (fast_request, safer_request):
+            trip = main.get_route(request)
+            for leg in (trip.approach, trip.ride, trip.walk):
+                if leg:
+                    self.assertNotIn(self.segment_id, leg.segment_ids)
+
+        self.assertEqual(main.resolve_report(report.id).status, "resolved")
+        self.assertEqual(main.get_routing_state().reports, [])
+        self.assertEqual(main.get_routing_state().closures[0].segment_id, self.segment_id)
+        self.assertNotIn(self.segment_id, main.get_route(fast_request).ride.segment_ids)
+        main.set_segment_closure(self.segment_id, ClosureChange(closed=False))
+        self.assertEqual(main.get_route(fast_request).ride.segment_ids, baseline.ride.segment_ids)
+        self.assertEqual(main.get_route(fast_request).warning_ids, [])
+
+    def test_reopening_keeps_an_active_reports_warning_and_penalty(self) -> None:
+        report = self.create_report()
+        main.set_segment_closure(self.segment_id, ClosureChange(closed=True))
+        main.set_segment_closure(self.segment_id, ClosureChange(closed=False))
+        self.assertEqual(main.get_route(RouteRequest(destination_id="tampa-library")).warning_ids, [report.id])
+        self.assertEqual(main.get_route(RouteRequest(destination_id="tampa-library", mode="safer")).warning_ids, [])
+
+    def test_closure_can_make_a_trip_unavailable(self) -> None:
+        closed = {segment.id for segment in main.route_graph.segments}
+        with self.assertRaises(RouteUnavailable):
+            plan_route(main.route_graph, RouteRequest(destination_id="tampa-library"), closed_segments=closed)
+
+    def test_parked_rider_can_plan_a_walk_between_points_on_the_same_segment(self) -> None:
+        trip = main.get_route(RouteRequest(destination_id="tampa-library"))
+        a, b = main.reportable_segments[self.segment_id].geometry[:2]
+
+        def point(fraction: float) -> MapPoint:
+            return MapPoint(latitude=a[0] + fraction * (b[0] - a[0]), longitude=a[1] + fraction * (b[1] - a[1]))
+
+        request = RouteRequest(start=point(0.25), destination=point(0.75), parked_rack_id=trip.rack_id)
+        walking = main.get_route(request)
+        self.assertIsNone(walking.ride)
+        self.assertEqual(walking.walk.segment_ids, [self.segment_id])
+        main.set_segment_closure(self.segment_id, ClosureChange(closed=True))
+        walking = main.get_route(request)
+        self.assertIsNone(walking.ride)
+        self.assertNotIn(self.segment_id, walking.walk.segment_ids)
