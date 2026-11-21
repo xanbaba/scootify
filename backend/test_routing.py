@@ -10,10 +10,11 @@ class TripRoutingTests(TestCase):
         self.graph = load_graph()
         self.library = RouteRequest(destination_id="tampa-library")
 
-    def test_preset_trip_joins_both_legs_at_the_library_rack(self) -> None:
+    def test_preset_trip_uses_the_primary_approach_and_library_rack(self) -> None:
         trip = plan_route(self.graph, self.library)
         demo = self.graph.demo
-        self.assertEqual(trip.ride.segment_ids, demo.primary_segments)
+        approach_segments = trip.approach.segment_ids if trip.approach else []
+        self.assertEqual(approach_segments + trip.ride.segment_ids, demo.primary_segments)
         self.assertEqual(trip.walk.segment_ids, demo.walk_segments)
         self.assertEqual(trip.ride.geometry[-1], trip.walk.geometry[0])
         self.assertGreater(trip.ride.duration_seconds, 0)
@@ -26,6 +27,8 @@ class TripRoutingTests(TestCase):
         trip = plan_route(self.graph, self.library)
 
         self.assertNotIn(closure, trip.ride.segment_ids)
+        if trip.approach:
+            self.assertNotIn(closure, trip.approach.segment_ids)
         self.assertEqual(trip.ride.geometry[-1], trip.walk.geometry[0])
 
     def test_start_outside_coverage_is_rejected(self) -> None:
@@ -73,6 +76,7 @@ class TripRoutingTests(TestCase):
         midpoint = MapPoint(latitude=0, longitude=0.0015)
         trip = plan_route(self.graph, RouteRequest(destination_id="destination", start=midpoint))
         self.assertEqual(trip.rack_id, UUID(int=2))
+        self.assertIsNone(trip.approach)
         self.assertEqual(trip.ride.geometry[1:], [coordinates["b"]])
         self.assertAlmostEqual(trip.ride.geometry[0][0], midpoint.latitude)
         self.assertAlmostEqual(trip.ride.geometry[0][1], midpoint.longitude)
@@ -81,6 +85,50 @@ class TripRoutingTests(TestCase):
         self.graph.rack_connections = self.graph.rack_connections[:1]
         with self.assertRaisesRegex(RouteUnavailable, "No bike-and-walk trip"):
             plan_route(self.graph, RouteRequest(destination_id="destination", start=midpoint))
+
+    def test_walk_first_beats_riding_the_detour_and_uses_only_open_paths(self) -> None:
+        coordinates = {"s": (0, 0), "j": (0, 0.0001), "rack": (0, 0.001), "d": (0, 0.0011)}
+        self.graph.nodes = [
+            CampusNode(id=node, latitude=lat, longitude=lng)
+            for node, (lat, lng) in coordinates.items()
+        ]
+        self.graph.demo.origin_node = "s"
+        self.graph.destinations = [Destination(id="destination", name="Building", entrance_node="d")]
+        self.graph.rack_connections = [RackConnection(rack_id=UUID(int=1), node_id="rack", name="Rack")]
+
+        self.graph.segments = [
+            PathSegment(id="stairs", name="Steps", from_node="s", to_node="j", modes=["walk"],
+                        geometry=[coordinates["s"], coordinates["j"]], length_m=14),
+            PathSegment(id="ride", name="Path", from_node="j", to_node="rack", modes=["bike"],
+                        geometry=[coordinates["j"], coordinates["rack"]], length_m=100),
+            PathSegment(id="detour", name="Detour", from_node="s", to_node="rack", modes=["bike"],
+                        geometry=[coordinates["s"], (0.001, 0.0005), coordinates["rack"]], length_m=250),
+            PathSegment(id="entrance", name="Walkway", from_node="rack", to_node="d", modes=["walk"],
+                        geometry=[coordinates["rack"], coordinates["d"]], length_m=14),
+        ]
+
+        request = RouteRequest(destination_id="destination")
+        trip = plan_route(self.graph, request)
+        self.assertIsNotNone(trip.approach)
+        self.assertEqual(trip.approach.segment_ids, ["stairs"])
+        self.assertEqual(trip.approach.geometry[-1], trip.ride.geometry[0])
+        self.assertEqual(trip.approach.duration_seconds, 10)
+        self.assertEqual(trip.ride.duration_seconds, 25)
+        self.assertEqual(trip.walk.duration_seconds, 10)
+
+        self.graph.segments = [segment for segment in self.graph.segments if segment.id != "stairs"]
+        trip = plan_route(self.graph, request)
+        self.assertIsNone(trip.approach)
+        self.assertEqual(trip.ride.segment_ids, ["detour"])
+
+    def test_off_path_start_has_an_estimated_walk_to_the_network(self) -> None:
+        start = MapPoint(latitude=28.05875, longitude=-82.41558)
+        trip = plan_route(self.graph, RouteRequest(destination_id="tampa-library", start=start))
+
+        self.assertIsNotNone(trip.approach)
+        self.assertEqual(trip.approach.geometry[0], (start.latitude, start.longitude))
+        self.assertEqual(trip.approach.geometry[-1], trip.ride.geometry[0])
+        self.assertGreater(trip.approach.duration_seconds, 0)
 
     def test_no_route_when_all_racks_lose_the_walk_connection(self) -> None:
         self.graph.segments = [

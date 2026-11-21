@@ -35,9 +35,11 @@ type CampusData = {
 type StartSelection = { point: Coordinate; source: "gps" | "pin" | "bookstore" };
 type DestinationSelection = { id: string } | { point: Coordinate };
 type MapSelection = "start" | "destination";
+type ActiveLeg = "approach" | "ride" | "walk";
 type RouteLeg = { geometry: Coordinate[]; duration_seconds: number };
 type TripRoute = {
   rack_id: string;
+  approach?: RouteLeg | null;
   ride: RouteLeg;
   walk: RouteLeg;
   snap_distance_m: number;
@@ -132,10 +134,11 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   const [perspectiveReady, setPerspectiveReady] = useState(false);
   const [perspectiveUnavailable, setPerspectiveUnavailable] = useState(false);
   const [following, setFollowing] = useState(true);
-  const [walking, setWalking] = useState(false);
+  const [confirmedLeg, setConfirmedLeg] = useState<"ride" | "walk" | null>(null);
   const tracking = useLiveLocation(navigation);
   const liveFix = tracking?.fix;
   const route = result && "route" in result ? result.route : null;
+  const activeLeg: ActiveLeg = confirmedLeg ?? (route?.approach ? "approach" : "ride");
   const failure = result && "error" in result ? result : null;
   const namedId = destination && "id" in destination ? destination.id : "";
   const namedDestination = campus.destinations.find(({ id }) => id === namedId);
@@ -152,8 +155,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
   const usePerspective = isNavigating && perspectiveReady && !perspectiveUnavailable;
   const guidancePosition = liveOnCampus ? liveFix.point : start?.point;
   const guidanceHeading = (liveOnCampus ? liveFix.heading : null)
-    ?? routeHeading((walking ? route?.walk.geometry : route?.ride.geometry) ?? []);
-  const offPathPins = route && (route.snap_distance_m >= 8 || route.destination_snap_distance_m >= 8);
+    ?? routeHeading(route?.[activeLeg]?.geometry ?? []);
 
   useEffect(() => {
     if (!sheet.current) return;
@@ -297,9 +299,9 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
 
   useEffect(() => {
     if (isNavigating || !route || !start || !destinationPoint) return;
-    const points = [start.point, destinationPoint, ...route.ride.geometry, ...route.walk.geometry];
+    const points = [start.point, destinationPoint, ...(route.approach?.geometry ?? []), ...route.ride.geometry, ...route.walk.geometry];
     map.current?.fitBounds(latLngBounds(points), { ...viewportPadding(), maxZoom: 18, animate: false });
-  }, [route, start, destinationPoint, isNavigating, viewportPadding]);
+  }, [route, start, destinationPoint, isNavigating, sheetHeight, viewportPadding]);
 
   useEffect(() => {
     if (navigation === null || !liveFix || !liveOnCampus || !start || !map.current) return;
@@ -365,7 +367,7 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
     setPerspectiveUnavailable(false);
     setNavigation(++navigationSequence.current);
     setFollowing(true);
-    setWalking(false);
+    setConfirmedLeg(null);
   }
 
   function endNavigation() {
@@ -393,6 +395,15 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
     ?? (liveFix && !liveOnCampus ? "Live location is outside the campus map."
       : liveFix ? "Live location" : "Waiting for GPS…");
   const rackLabel = parkingName === "Campus parking rack" ? "Parking rack" : parkingName;
+  const legLabels = {
+    approach: "Walk to the riding path",
+    ride: "Bike to " + rackLabel,
+    walk: destinationPin ? "Walk to destination" : "Walk to entrance",
+  };
+  const routeLegs = route ? (["approach", "ride", "walk"] as const).flatMap((key) => {
+    const leg = route[key];
+    return leg ? [{ key, leg }] : [];
+  }) : [];
 
   return (
     <main
@@ -415,18 +426,12 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
         />
         <MapInteraction onPick={picking ? onMapPoint : null} onDrag={pauseFollowing} />
         {picking && <Rectangle bounds={campusBounds} interactive={false} pathOptions={{ color: "#164f3e", weight: 2, dashArray: "6 6", fillOpacity: 0.035 }} />}
-        {route && route.ride.geometry.length > 1 && (
-          <>
-            <Polyline positions={route.ride.geometry} pathOptions={routeOutline} interactive={false} />
-            <Polyline positions={route.ride.geometry} pathOptions={rideStyle} className="trip-ride" interactive={false} />
-          </>
-        )}
-        {route && route.walk.geometry.length > 1 && (
-          <>
-            <Polyline positions={route.walk.geometry} pathOptions={{ ...routeOutline, weight: 8 }} interactive={false} />
-            <Polyline positions={route.walk.geometry} pathOptions={walkStyle} className="trip-walk" interactive={false} />
-          </>
-        )}
+        {routeLegs.filter(({ leg }) => leg.geometry.length > 1).map(({ key, leg }) => (
+          <Polyline key={key + "-outline"} positions={leg.geometry} pathOptions={key === "ride" ? routeOutline : { ...routeOutline, weight: 8 }} interactive={false} />
+        ))}
+        {routeLegs.filter(({ leg }) => leg.geometry.length > 1).map(({ key, leg }) => (
+          <Polyline key={key} positions={leg.geometry} pathOptions={key === "ride" ? rideStyle : walkStyle} className={key === "ride" ? "trip-ride" : "trip-walk"} interactive={false} />
+        ))}
         {showRacks && rackMarkers.filter(({ id }) => id !== route?.rack_id).map(({ id, point, rack, name }) => (
           <CircleMarker
             key={id}
@@ -506,9 +511,10 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
             </div>
             {route && (
               <div className="next-leg">
-                <span className={walking ? "leg-icon walk" : "leg-icon"}>{walking ? <Footprints aria-hidden="true" size={22} /> : <Bike aria-hidden="true" size={22} />}</span>
-                <div><strong>{walking ? "Walk to destination" : "Bike to " + rackLabel}</strong><small>Follow the {walking ? "dashed" : "solid"} line</small></div>
-                {!walking && <button className="sheet-secondary" type="button" onClick={() => setWalking(true)}>I parked <ArrowRight aria-hidden="true" size={15} /></button>}
+                <span className={activeLeg === "ride" ? "leg-icon" : "leg-icon walk"}>{activeLeg === "ride" ? <Bike aria-hidden="true" size={22} /> : <Footprints aria-hidden="true" size={22} />}</span>
+                <div><strong>{legLabels[activeLeg]}</strong><small>{activeLeg === "approach" ? "Walk with your bike or scooter" : "Follow the " + (activeLeg === "ride" ? "solid" : "dashed") + " line"}</small></div>
+                {activeLeg === "approach" && <button className="sheet-secondary" type="button" onClick={() => setConfirmedLeg("ride")}>Start riding <ArrowRight aria-hidden="true" size={15} /></button>}
+                {activeLeg === "ride" && <button className="sheet-secondary" type="button" onClick={() => setConfirmedLeg("walk")}>I parked <ArrowRight aria-hidden="true" size={15} /></button>}
               </div>
             )}
             {!route && <p className="sheet-note" role="status">{failure?.error ?? "Updating your route…"}</p>}
@@ -522,13 +528,18 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
                 <div className="sheet-heading preview-heading">
                   <button className="plain-icon preview-back" type="button" aria-label="Choose another destination" onClick={() => chooseDestination(null)}><ArrowLeft aria-hidden="true" size={21} /></button>
                   <h1>{destinationLabel}</h1>
-                  {route && <span className="estimate" title="Estimated trip time">{formatTime(route.ride.duration_seconds + route.walk.duration_seconds)}</span>}
+                  {route && <span className="estimate" title="Estimated trip time">{formatTime(routeLegs.reduce((time, { leg }) => time + leg.duration_seconds, 0))}</span>}
                 </div>
                 {route && (
                   <>
                     <div className="route-breakdown" aria-label="Trip legs">
-                      <div><span className="leg-icon"><Bike aria-hidden="true" size={19} /></span><span>Bike to {rackLabel}<small>Ride</small></span><strong>{formatTime(route.ride.duration_seconds)}</strong></div>
-                      <div><span className="leg-icon walk"><Footprints aria-hidden="true" size={19} /></span><span>{destinationPin ? "Walk to destination" : "Walk to entrance"}<small>On foot</small></span><strong>{formatTime(route.walk.duration_seconds)}</strong></div>
+                      {routeLegs.map(({ key, leg }) => (
+                        <div key={key}>
+                          <span className={key === "ride" ? "leg-icon" : "leg-icon walk"}>{key === "ride" ? <Bike aria-hidden="true" size={19} /> : <Footprints aria-hidden="true" size={19} />}</span>
+                          <span>{legLabels[key]}<small>{key === "ride" ? "Ride" : "On foot"}</small></span>
+                          <strong>{formatTime(leg.duration_seconds)}</strong>
+                        </div>
+                      ))}
                     </div>
                     <button className="go-button" type="button" onClick={beginNavigation}><Navigation aria-hidden="true" size={18} /> Go</button>
                   </>
@@ -565,7 +576,8 @@ function LoadedCampusMap({ campus, racks }: { campus: CampusData; racks: Rack[] 
               </div>
             )}
             {locationMessage && <p className="sheet-note" role="status">{locationMessage}</p>}
-            {offPathPins && <p className="sheet-note">Route lines use mapped paths near your pins.</p>}
+            {route?.approach && route.snap_distance_m >= 8 && <p className="sheet-note">The walk from your start pin to the mapped path is estimated.</p>}
+            {route && route.destination_snap_distance_m >= 8 && <p className="sheet-note">The route ends at the mapped path nearest your destination pin.</p>}
           </>
         )}
       </section>

@@ -8,7 +8,8 @@ import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { useCompassHeading, type Coordinate } from "./navigationHeading";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-type NavigationRoute = { ride: { geometry: Coordinate[] }; walk: { geometry: Coordinate[] } };
+type RouteLine = { geometry: Coordinate[] };
+type NavigationRoute = { approach?: RouteLine | null; ride: RouteLine; walk: RouteLine };
 
 export type PerspectiveProps = {
   session: number;
@@ -79,10 +80,13 @@ function pointFeature(point: Coordinate, role?: string): Feature<Point> {
 function routeFeatures(route: NavigationRoute | null, destination?: Coordinate): FeatureCollection {
   const features: Array<Feature<LineString | Point>> = [];
   if (route) {
-    for (const role of ["ride", "walk"] as const) {
-      const geometry = route[role].geometry;
-      if (geometry.length < 2) continue;
-      features.push({ type: "Feature", properties: { role }, geometry: { type: "LineString", coordinates: geometry.map(lngLat) } });
+    for (const leg of ["approach", "ride", "walk"] as const) {
+      const geometry = route[leg]?.geometry;
+      if (!geometry || geometry.length < 2) continue;
+      features.push({
+        type: "Feature", properties: { role: leg === "ride" ? "ride" : "walk" },
+        geometry: { type: "LineString", coordinates: geometry.map(lngLat) },
+      });
     }
     const parking = route.walk.geometry[0];
     if (parking) features.push(pointFeature(parking, "parking"));

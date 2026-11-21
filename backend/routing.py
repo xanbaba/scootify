@@ -1,18 +1,19 @@
 from collections import defaultdict
 from dataclasses import dataclass
-from heapq import heappop, heappush
+from heapq import heapify, heappop, heappush
 from math import cos, hypot, radians
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-from .campus import CampusGraph, Coordinate, PathSegment, within_bounds
+from .campus import CampusGraph, Coordinate, PathSegment, distance_m, within_bounds
 
 
 BIKE_SPEED_MPS = 4.0
 WALK_SPEED_MPS = 1.4
 METERS_PER_DEGREE = 111_195
+START_SNAP_TOLERANCE_M = 8
 MAP_START_NODE = "map-start"
 MAP_DESTINATION_NODE = "map-destination"
 Mode = Literal["bike", "walk"]
@@ -48,6 +49,7 @@ class TripRoute(BaseModel):
     walk: RouteLeg
     snap_distance_m: float
     destination_snap_distance_m: float
+    approach: RouteLeg | None = None
 
 
 class RouteUnavailable(Exception):
@@ -69,6 +71,15 @@ Adjacency = dict[str, list[Traversal]]
 class ShortestPaths:
     durations: dict[str, float]
     previous: dict[str, tuple[str, Traversal]]
+    starts: dict[str, str]
+
+
+@dataclass(frozen=True)
+class PathSnap:
+    segment: PathSegment
+    index: int
+    point: Coordinate
+    distance_m: float
 
 
 def travel_direction(segment: PathSegment, mode: Mode) -> Literal["forward", "backward", "both"]:
@@ -94,10 +105,14 @@ def build_adjacency(
     return adjacency
 
 
-def shortest_paths(adjacency: Adjacency, start: str, speed_mps: float) -> ShortestPaths:
-    durations = {start: 0.0}
+def shortest_paths(
+    adjacency: Adjacency, start_times: dict[str, float], speed_mps: float
+) -> ShortestPaths:
+    durations = start_times.copy()
     previous: dict[str, tuple[str, Traversal]] = {}
-    queue = [(0.0, start)]
+    starts = {node: node for node in start_times}
+    queue = [(duration, node) for node, duration in start_times.items()]
+    heapify(queue)
     while queue:
         duration, node = heappop(queue)
         if duration != durations[node]:
@@ -107,8 +122,9 @@ def shortest_paths(adjacency: Adjacency, start: str, speed_mps: float) -> Shorte
             if candidate < durations.get(traversal.target, float("inf")):
                 durations[traversal.target] = candidate
                 previous[traversal.target] = (node, traversal)
+                starts[traversal.target] = starts[node]
                 heappush(queue, (candidate, traversal.target))
-    return ShortestPaths(durations, previous)
+    return ShortestPaths(durations, previous, starts)
 
 
 def make_leg(
@@ -132,15 +148,11 @@ def make_leg(
         geometry=geometry,
         segment_ids=segment_ids,
         distance_m=round(sum(traversal.length_m for traversal in traversals), 1),
-        duration_seconds=round(paths.durations[target], 1),
+        duration_seconds=round(paths.durations[target] - paths.durations[node], 1),
     )
 
 
-def prepare_map_point(
-    point: MapPoint, graph: CampusGraph, adjacency: Adjacency, mode: Mode, *,
-    virtual_node: str, reverse: bool = False,
-) -> tuple[str, Coordinate, float]:
-    endpoint = "start" if mode == "bike" else "destination"
+def snap_map_point(point: MapPoint, graph: CampusGraph, endpoint: Literal["start", "destination"]) -> PathSnap:
     if graph.bounds and not within_bounds((point.latitude, point.longitude), graph.bounds):
         raise RouteUnavailable(f"The {endpoint} is outside the USF Tampa routing area. Pick a point on campus.")
 
@@ -154,7 +166,7 @@ def prepare_map_point(
     nearest = None
     nearest_distance = float("inf")
     for segment in graph.segments:
-        if mode not in segment.modes or segment.id.startswith("access-"):
+        if segment.id.startswith("access-") or (endpoint == "destination" and "walk" not in segment.modes):
             continue
         for index, (a, b) in enumerate(zip(segment.geometry, segment.geometry[1:]), start=1):
             ay, ax = offset(a)
@@ -180,10 +192,20 @@ def prepare_map_point(
         snapped = b
     else:
         snapped = (a[0] + fraction * (b[0] - a[0]), a[1] + fraction * (b[1] - a[1]))
+    return PathSnap(segment=segment, index=index, point=snapped, distance_m=nearest_distance)
+
+
+def connect_snap(
+    snap: PathSnap, adjacency: Adjacency, mode: Mode, virtual_node: str, *, reverse: bool = False,
+) -> str:
+    segment, index, snapped = snap.segment, snap.index, snap.point
+    geometry = segment.geometry
     if snapped == geometry[0]:
-        return segment.from_node, snapped, nearest_distance
+        return segment.from_node
     if snapped == geometry[-1]:
-        return segment.to_node, snapped, nearest_distance
+        return segment.to_node
+    if mode not in segment.modes:
+        return virtual_node
 
     leading = geometry[:index]
     trailing = geometry[index:]
@@ -192,14 +214,8 @@ def prepare_map_point(
     if trailing[0] != snapped:
         trailing.insert(0, snapped)
 
-    def shape_length(shape: list[Coordinate]) -> float:
-        return sum(
-            hypot((p[0] - q[0]) * METERS_PER_DEGREE, (p[1] - q[1]) * longitude_scale)
-            for p, q in zip(shape, shape[1:])
-        )
-
-    start_distance = shape_length(leading)
-    end_distance = shape_length(trailing)
+    start_distance = sum(distance_m(p, q) for p, q in zip(leading, leading[1:]))
+    end_distance = sum(distance_m(p, q) for p, q in zip(trailing, trailing[1:]))
     scale = segment.length_m / (start_distance + end_distance)
     direction = travel_direction(segment, mode)
     trailing_allowed = direction != ("forward" if reverse else "backward")
@@ -210,25 +226,28 @@ def prepare_map_point(
         adjacency[virtual_node].append(
             Traversal(segment.from_node, segment.id, leading[::-1], start_distance * scale)
         )
-    return virtual_node, snapped, nearest_distance
+    return virtual_node
 
 
 def plan_route(graph: CampusGraph, request: RouteRequest) -> TripRoute:
     locations = {node.id: (node.latitude, node.longitude) for node in graph.nodes}
     bike_graph = build_adjacency(graph.segments, "bike")
+    approach_graph = build_adjacency(graph.segments, "walk")
     if request.start is None:
         origin = graph.default_start_node
         start, snap_distance = locations[origin], 0.0
     else:
-        origin, start, snap_distance = prepare_map_point(
-            request.start, graph, bike_graph, "bike", virtual_node=MAP_START_NODE,
-        )
+        snap = snap_map_point(request.start, graph, "start")
+        origin = connect_snap(snap, bike_graph, "bike", MAP_START_NODE)
+        connect_snap(snap, approach_graph, "walk", MAP_START_NODE)
+        start, snap_distance = snap.point, snap.distance_m
+        locations[origin] = start
 
     walk_graph = build_adjacency(graph.segments, "walk", reverse=True)
     if request.destination is not None:
-        entrance_node, entrance, destination_snap = prepare_map_point(
-            request.destination, graph, walk_graph, "walk", virtual_node=MAP_DESTINATION_NODE, reverse=True,
-        )
+        snap = snap_map_point(request.destination, graph, "destination")
+        entrance_node = connect_snap(snap, walk_graph, "walk", MAP_DESTINATION_NODE, reverse=True)
+        entrance, destination_snap = snap.point, snap.distance_m
     else:
         destination = next((item for item in graph.destinations if item.id == request.destination_id), None)
         if destination is None:
@@ -236,8 +255,15 @@ def plan_route(graph: CampusGraph, request: RouteRequest) -> TripRoute:
         entrance_node = destination.entrance_node
         entrance, destination_snap = locations[entrance_node], 0.0
 
-    ride_paths = shortest_paths(bike_graph, origin, BIKE_SPEED_MPS)
-    walk_paths = shortest_paths(walk_graph, entrance_node, WALK_SPEED_MPS)
+    # The costs to start cycling at reachable junctions are their approach walking times.
+    approach_paths = shortest_paths(approach_graph, {origin: 0.0}, WALK_SPEED_MPS)
+    parking_nodes = {rack.node_id for rack in graph.rack_connections}
+    start_times = {
+        node: duration for node, duration in approach_paths.durations.items()
+        if node in bike_graph and node not in parking_nodes
+    }
+    ride_paths = shortest_paths(bike_graph, start_times, BIKE_SPEED_MPS)
+    walk_paths = shortest_paths(walk_graph, {entrance_node: 0.0}, WALK_SPEED_MPS)
     candidates = []
     for rack in graph.rack_connections:
         ride_time = ride_paths.durations.get(rack.node_id)
@@ -249,9 +275,18 @@ def plan_route(graph: CampusGraph, request: RouteRequest) -> TripRoute:
         raise RouteUnavailable("No bike-and-walk trip is available from this start. Choose another point.")
 
     _, rack_id, rack_node = min(candidates)
+    boarding_node = ride_paths.starts[rack_node]
+    approach = None
+    if boarding_node != origin or snap_distance >= START_SNAP_TOLERANCE_M:
+        approach = make_leg(approach_paths, boarding_node, start)
+        if request.start is not None and snap_distance > 0:
+            approach.geometry.insert(0, (request.start.latitude, request.start.longitude))
+            approach.distance_m = round(approach.distance_m + snap_distance, 1)
+            approach.duration_seconds = round(approach.duration_seconds + snap_distance / WALK_SPEED_MPS, 1)
     return TripRoute(
         rack_id=rack_id,
-        ride=make_leg(ride_paths, rack_node, start),
+        approach=approach,
+        ride=make_leg(ride_paths, rack_node, locations[boarding_node]),
         walk=make_leg(walk_paths, rack_node, entrance, reverse=True),
         snap_distance_m=round(snap_distance, 1),
         destination_snap_distance_m=round(destination_snap, 1),

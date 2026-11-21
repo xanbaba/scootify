@@ -34,9 +34,9 @@ Run `npm.cmd run build` from `frontend` to type-check and build the frontend. Ru
 ## HackJam demo
 
 - **Primary track** — Home Turf. Scootify addresses a local USF Tampa problem by connecting students who report path hazards with the campus staff who can fix them. [HackJam ’26 tracks](https://www.mlh.com/events/hackjam-26)
-- **Trip** — Under **Set start** or **Change**, choose **Use Bookstore**, then choose **Library** for a repeatable demo. The map draws a solid bike leg to the selected rack and a dashed walk to the main entrance. [USF campus ride, checkpoints 3–4](https://www.cutr.usf.edu/2026/07/roll-safe-bulls/) · [Tampa Library entrance](https://lib.usf.edu/news/new-entrance-for-tampa-library-sets-november-opening/)
+- **Trip** — Under **Set start** or **Change**, choose **Use Bookstore**, then choose **Library** for a repeatable demo. The map uses a solid line for the ride to parking and dashed lines for walking. [USF campus ride, checkpoints 3–4](https://www.cutr.usf.edu/2026/07/roll-safe-bulls/) · [Tampa Library entrance](https://lib.usf.edu/news/new-entrance-for-tampa-library-sets-november-opening/)
 - **Closure scenario** — Simulate a pothole on the Collins Boulevard approach path (`osm-43877414-3566360615-557390886`). The campus graph gives the Bookstore trip a different approach to the east rack when that segment is removed.
-- **Live guidance** — Preview the full trip from overhead. Tap **Go** for a tilted view with your heading at the top. Tap **I parked** to switch to the walking leg. **End trip** stops tracking and restores the overhead preview.
+- **Live guidance** — Preview the full trip from overhead. Tap **Go** for a tilted view with your heading at the top. If the trip starts on foot, tap **Start riding** when you reach the riding path. Tap **I parked** to switch to the final walk. **End trip** stops tracking and restores the overhead preview.
 
 ## Campus data
 
@@ -45,15 +45,17 @@ Run `npm.cmd run build` from `frontend` to type-check and build the frontend. Ru
 
 ## Route preview
 
-The student view uses the browser’s current location when permission is granted. Search for a building or use **Drop a pin**. Use **Pin start** if location is unavailable or to choose another start. Pins show the selected coordinates. Route lines start and finish on mapped paths near those coordinates.
+The path graph connects adjacent junctions on mapped pedestrian-area boundaries for walking, including the shortcut outside Engineering II.
+
+The student view uses the browser’s current location when permission is granted. Search for a building or use **Drop a pin**. Use **Pin start** if location is unavailable or to choose another start. Pins show the selected coordinates. When the start is away from the path network, the first walking leg includes a straight-line estimate to the nearest mapped path. Scootify has no indoor path data.
 
 **Go** uses `navigator.geolocation.watchPosition` while the trip is active and the page is visible. The watch is cleared when the trip ends or the page goes into the background. A deployed app needs HTTPS for location access. The local loopback address works for development. [Browser geolocation requirements](https://developer.mozilla.org/en-US/docs/Web/API/Geolocation/watchPosition)
 
 The navigation camera uses the phone compass when permitted, then the device’s GPS course or recent movement. Before a heading is available, it faces the planned route. Devices without a working WebGL context use the overhead GPS view. [Device orientation API](https://www.w3.org/TR/orientation-event/)
 
-`POST /api/route` accepts either a `destination_id` or a `destination` coordinate, plus an optional `start` coordinate. Coordinates have `latitude` and `longitude` fields. Omit `start` for the explicit Bookstore preset. The response contains the selected rack ID, both legs’ coordinates, segment IDs, distances, times, and how far each requested endpoint was from its mapped path.
+`POST /api/route` accepts either a `destination_id` or a `destination` coordinate, plus an optional `start` coordinate. Coordinates have `latitude` and `longitude` fields. Omit `start` for the explicit Bookstore preset. The response contains the selected rack ID, the `approach` (optional first walk), `ride`, and `walk` legs, and the distances from the pins to the network. Each leg includes its coordinates, segment IDs, distance, and estimated time.
 
-Two Dijkstra searches calculate cycling time from the start and walking time to the destination. The planner uses the connected rack with the lowest total time. Estimates assume 4 m/s on the bike and 1.4 m/s on foot.
+The planner checks which riding paths the student can reach on foot, then uses those walking times to calculate the fastest ride to each rack. It includes the final walk from the rack to the destination. The app shows the initial walk only when it appears in the selected trip. Estimates assume 4 m/s on the bike and 1.4 m/s on foot.
 
 ## Frameworks, data, and AI credits
 
