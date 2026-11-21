@@ -6,7 +6,7 @@ Scootify helps USF Tampa students plan a trip through campus parking and lets ca
 
 Use Node.js 22.12+ and Python 3.11+. From the repository root, open two PowerShell terminals.
 
-Backend:
+### Backend
 
 ```powershell
 python -m venv .venv
@@ -15,7 +15,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Frontend:
+### Frontend
 
 ```powershell
 cd frontend
@@ -25,13 +25,15 @@ npm.cmd run dev -- --host 127.0.0.1
 
 - [Student view](http://127.0.0.1:5173/)
 - [Admin view](http://127.0.0.1:5173/admin)
-- [API health](http://127.0.0.1:8000/api/health) returns `{"status":"ok"}`. Both React views also check this endpoint through the Vite proxy.
+- [API health](http://127.0.0.1:8000/api/health) returns `{"status":"ok"}`. Vite forwards frontend API requests to the backend.
 
-Open both views and check for **API connected**. If the API starts after the frontend, use **Retry** to run the health check again.
+The student view is ready when the campus map and destination search load. The admin view shows **API connected** when its health check succeeds. If you start the backend after loading the frontend, reload the student view and use **Retry** in the admin view if needed.
 
-Run `npm.cmd run build` from `frontend` to type-check and build the frontend. Run `.\.venv\Scripts\python.exe -m unittest discover` from the repository root to check graph connectivity, rack ranking, and route availability.
+Run `npm.cmd run build` from `frontend` to type-check and build the frontend. Run `.\.venv\Scripts\python.exe -m unittest discover` from the repository root to test campus routing, hazard reports, voting, and path closures.
 
 ## HackJam demo
+
+[Watch the Scootify demo video](https://youtu.be/AFPXQiwqBDo).
 
 - **Primary track** — Home Turf. Scootify addresses a local USF Tampa problem by connecting students who report path hazards with the campus staff who can fix them. [HackJam ’26 tracks](https://www.mlh.com/events/hackjam-26)
 - **Trip** — Under **Set start** or **Change**, choose **Use Bookstore**, then choose **Library** for a repeatable demo. The map uses a solid line for the ride to parking and dashed lines for walking. [USF campus ride, checkpoints 3–4](https://www.cutr.usf.edu/2026/07/roll-safe-bulls/) · [Tampa Library entrance](https://lib.usf.edu/news/new-entrance-for-tampa-library-sets-november-opening/)
@@ -54,7 +56,7 @@ The student view uses the browser’s current location when permission is grante
 
 The navigation camera uses the phone compass when permitted, then the device’s GPS course or recent movement. Before a heading is available, it faces the planned route. Devices without a working WebGL context use the overhead GPS view. [Device orientation API](https://www.w3.org/TR/orientation-event/)
 
-`POST /api/route` accepts either a `destination_id` or a `destination` coordinate, plus an optional `start` coordinate. Coordinates have `latitude` and `longitude` fields. Omit `start` for the explicit Bookstore preset. The response contains the selected rack ID, the `approach` (optional first walk), `ride`, and `walk` legs, and the distances from the pins to the network. Each leg includes its coordinates, segment IDs, distance, and estimated time.
+`POST /api/route` accepts a `destination_id` or a `destination` coordinate, an optional `start` coordinate, and a `mode` of `fast` or `safer`. Coordinates use `latitude` and `longitude` fields. Omit `start` for the Bookstore preset. After parking, send `parked_rack_id` to calculate only the remaining walk. The response includes the rack ID, any `approach`, `ride`, and `walk` legs, and warning IDs for reported hazards on the route. Each leg includes coordinates, segment IDs, distance, and estimated time.
 
 The planner checks which riding paths the student can reach on foot, then uses those walking times to calculate the fastest ride to each rack. It includes the final walk from the rack to the destination. The app shows the initial walk only when it appears in the selected trip. Estimates assume 4 m/s on the bike and 1.4 m/s on foot.
 
@@ -64,7 +66,7 @@ Tap **Report** on the student map. The form suggests a GPS pin and lets the ride
 
 Fast mode minimizes travel time. Safer adds a 60-second routing cost to each traversal of a segment with an active report. The ETA uses physical travel time in both modes. During GPS navigation, an on-route hazard ahead appears in a dismissible banner. After the GPS check detects a pass, **Still there** and **Looks clear** stay available for up to 25 seconds. If you report a hazard during a trip, Scootify skips both prompts for that report until you start a new trip.
 
-SQLite stores reports, rider observations, and path closures at `backend/data/scootify.sqlite3`. Set `SCOOTIFY_DB_PATH` before running the API to use a separate database. The demo counts one current observation per report and browser. Staff can move a report from Open to In progress to Resolved. Resolving it clears the warning and cost. Staff can close and reopen its path independently.
+SQLite stores reports, rider observations, and path closures at `backend/data/scootify.sqlite3`. Set `SCOOTIFY_DB_PATH` before running the API to use a separate database. The demo counts one current observation per report and browser. Staff can expand a report to view its location and vote counts, move it from Open to In progress to Resolved, and close or reopen the path from the same entry. The **Path closed** filter also includes resolved reports whose paths are still closed. Resolving a report clears its warning and routing cost.
 
 The student view checks routing updates every two seconds while visible and checks again when brought to the foreground. Both modes exclude closed segments from every leg. During navigation, Scootify replans from the latest reliable campus GPS fix when available. Once parked, it replans the remaining walk. Reloading the student tab restores the selected trip and mode. The local prototype uses a shared demo admin view without staff sign-in.
 
@@ -72,4 +74,5 @@ The student view checks routing updates every two seconds while visible and chec
 
 - Frontend uses [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Vite](https://vite.dev/), [Leaflet](https://leafletjs.com/), and [React Leaflet](https://react-leaflet.js.org/). The tilted camera uses [MapLibre GL JS](https://maplibre.org/maplibre-gl-js/docs/). Icons use [Lucide](https://lucide.dev/), and the student view uses [Manrope](https://fontsource.org/fonts/manrope).
 - Backend uses [FastAPI](https://fastapi.tiangolo.com/), [Pydantic](https://docs.pydantic.dev/), and [Uvicorn](https://www.uvicorn.org/).
-- OpenAI Codex helped plan milestones and generated the initial scaffold, rack importer, demo graph, routing, student interface, live GPS integration, hazard reporting and voting, staff queue, path closures, live rerouting, tests, and documentation. The project entrant supplied the concept, parking and navigation requirements, interface reference, campus use case, stack choice, and event rules. Update this record as the project develops and include AI use in the HackJam submission.
+- **Project entrant** — Defined the product, campus use case, parking and navigation requirements, interface direction, and stack. Tested the running app on a phone.
+- **OpenAI Codex (GPT-6)** — Helped plan milestones and generated the initial scaffold, rack importer, demo graph, routing, student interface, GPS guidance, hazard reports and voting, staff dashboard, closures, live rerouting, tests, and documentation.
