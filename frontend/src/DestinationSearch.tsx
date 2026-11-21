@@ -1,4 +1,4 @@
-import { useId, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { ChevronRight, Dumbbell, Landmark, LibraryBig, MapPin, Search, X } from "lucide-react";
 
 export type CampusPlace = { id: string; name: string; point: [number, number] };
@@ -18,6 +18,7 @@ export function DestinationSearch({ places, onChoose }: {
   onChoose: (place: CampusPlace) => void;
 }) {
   const listId = useId();
+  const search = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -25,17 +26,34 @@ export function DestinationSearch({ places, onChoose }: {
     const place = places.find(({ name }) => name === shortcut.name);
     return place ? [{ ...shortcut, place }] : [];
   });
-  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const normalized = query.trim().toLowerCase().replace(/\s+/g, " ");
+  const searchText = /^(?:holy|holly) (?:see|c)$/.test(normalized) ? "holly c" : normalized;
+  const words = searchText.split(" ").filter(Boolean);
   const matching = words.length ? places.filter((place) => {
     const shortName = shortcuts.find(({ name }) => name === place.name)?.label;
-    const searchable = [place.name, placeName(place), shortName].join(" ").toLowerCase();
+    const hollyBuilding = /^Holly Housing Building ([A-Z])$/.exec(place.name)?.[1];
+    const searchable = [place.name, placeName(place), shortName, hollyBuilding && "Holly " + hollyBuilding]
+      .join(" ").toLowerCase();
     return words.every((word) => searchable.includes(word));
   }).slice(0, 6) : featured.map(({ place }) => place);
 
+  const closeSearch = useCallback(() => {
+    setOpen(false);
+    setActiveIndex(-1);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    function closeOutside(event: MouseEvent) {
+      if (event.target instanceof Node && !search.current?.contains(event.target)) closeSearch();
+    }
+    document.addEventListener("click", closeOutside, true);
+    return () => document.removeEventListener("click", closeOutside, true);
+  }, [closeSearch, open]);
+
   function handleKey(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Escape") {
-      setOpen(false);
-      setActiveIndex(-1);
+      closeSearch();
     } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       if (!matching.length) return;
       event.preventDefault();
@@ -52,7 +70,10 @@ export function DestinationSearch({ places, onChoose }: {
   }
 
   return (
-    <div className="destination-search">
+    <div className="destination-search" ref={search} onBlur={(event) => {
+      // A mobile keyboard can close and blur the input before the result's tap arrives.
+      if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) closeSearch();
+    }}>
       <div className="search-field">
         <Search aria-hidden="true" size={20} />
         <input
@@ -68,7 +89,6 @@ export function DestinationSearch({ places, onChoose }: {
           type="text"
           value={query}
           onFocus={() => setOpen(true)}
-          onBlur={() => { setOpen(false); setActiveIndex(-1); }}
           onChange={(event) => { setQuery(event.target.value); setOpen(true); setActiveIndex(-1); }}
           onKeyDown={handleKey}
         />
@@ -82,17 +102,21 @@ export function DestinationSearch({ places, onChoose }: {
         <>
           <ul className="search-results" id={listId} role="listbox" aria-label="Campus places">
             {matching.map((place, index) => (
-              <li
-                id={`${listId}-${index}`}
-                key={place.id}
-                role="option"
-                aria-selected={index === activeIndex}
-                onPointerDown={(event) => event.preventDefault()}
-                onClick={() => onChoose(place)}
-              >
-                <MapPin aria-hidden="true" size={17} />
-                <span>{placeName(place)}</span>
-                <ChevronRight aria-hidden="true" size={15} />
+              <li key={place.id} role="presentation">
+                <button
+                  type="button"
+                  id={`${listId}-${index}`}
+                  className="search-result"
+                  role="option"
+                  tabIndex={-1}
+                  aria-selected={index === activeIndex}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => onChoose(place)}
+                >
+                  <MapPin aria-hidden="true" size={17} />
+                  <span>{placeName(place)}</span>
+                  <ChevronRight aria-hidden="true" size={15} />
+                </button>
               </li>
             ))}
           </ul>
