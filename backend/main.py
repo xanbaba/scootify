@@ -3,6 +3,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ValidationError
 
+from .campus import CampusGraph, load_graph
 from .parking import ParkingRack, load_racks
 
 
@@ -11,11 +12,17 @@ class HealthResponse(BaseModel):
 
 
 app = FastAPI(title="Scootify API")
+campus_graph = load_graph()
 
 
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse()
+
+
+@app.get("/api/campus/graph")
+def get_campus_graph() -> CampusGraph:
+    return campus_graph
 
 
 @app.get("/api/campus/racks")
